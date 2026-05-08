@@ -896,11 +896,13 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
             // 检查收缩约束
             const double x1_sq = x[0] * x[0];
             const double x2_sq = x[1] * x[1];
-            const bool satisfies_contracted = 
+            const bool satisfies_contracted_hyperbolic = 
                 (x1_sq - x2_sq <= cfg.hyperbolic_contracted_params.a) && 
                 (cfg.hyperbolic_contracted_params.b * x2_sq - x1_sq <= cfg.hyperbolic_contracted_params.c);
+            const bool satisfies_contracted_speed = 
+                (x[3] >= cfg.candidate_contracted.lb[3]) && (x[3] <= cfg.candidate_contracted.ub[3]);
             
-            if (satisfies_contracted) {
+            if (satisfies_contracted_hyperbolic && satisfies_contracted_speed) {
                 contracted_valid_mask[i] = 1;
                 ++contracted_valid_count;
             }
