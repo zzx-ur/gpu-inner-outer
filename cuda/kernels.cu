@@ -799,7 +799,8 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
     std::uint32_t* d_max_flat = nullptr;
     std::uint8_t* d_pair_valid = nullptr;
     std::uint8_t* d_pair_satisfied = nullptr;
-    std::uint8_t* d_valid_mask_contracted = nullptr;
+    std::uint8_t* d_valid_mask = nullptr;                    // 原始约束的有效状态 mask
+    std::uint8_t* d_contracted_valid_mask = nullptr;         // 收缩约束的有效状态 mask
     std::uint8_t* d_candidate_mask = nullptr;
     std::uint8_t* d_candidate_contracted_mask = nullptr;
     std::uint8_t* d_reachable_prev = nullptr;
@@ -821,7 +822,8 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
         GSC_CUDA_CHECK(cudaMalloc(&d_max_flat, pair_count * sizeof(std::uint32_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_pair_valid, pair_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_pair_satisfied, pair_count * sizeof(std::uint8_t)));
-        GSC_CUDA_CHECK(cudaMalloc(&d_valid_mask_contracted, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_valid_mask, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_contracted_valid_mask, state_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_candidate_mask, state_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_candidate_contracted_mask, state_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_reachable_prev, state_count * sizeof(std::uint8_t)));
@@ -859,14 +861,34 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
         }
         std::cout << "GPU: Original candidate states: " << candidate_count << std::endl;
 
-        // 构建收缩约束的有效状态 mask
-        std::vector<std::uint8_t> valid_mask_contracted(state_count, 0);
-        std::uint64_t valid_contracted_count = 0;
+        // 构建原始约束的有效状态 mask（用于盒查询和前缀和）
+        std::vector<std::uint8_t> valid_mask(state_count, 0);
+        std::uint64_t valid_count = 0;
         for (std::uint64_t i = 0; i < state_count; ++i) {
             double x[kStateDim];
             prepared.state_grid.center(static_cast<std::uint32_t>(i), x);
             
             // 检查是否在 map 内
+            if (!point_in_rect(cfg.map, x)) {
+                continue;
+            }
+            
+            // 使用原始约束检查
+            if (satisfies_state_constraint(cfg, x)) {
+                valid_mask[i] = 1;
+                ++valid_count;
+            }
+        }
+        std::cout << "GPU: Valid states under original constraint: " << valid_count << std::endl;
+
+        // 构建收缩约束的有效状态 mask（用于迭代筛选）
+        std::vector<std::uint8_t> contracted_valid_mask(state_count, 0);
+        std::uint64_t contracted_valid_count = 0;
+        for (std::uint64_t i = 0; i < state_count; ++i) {
+            double x[kStateDim];
+            prepared.state_grid.center(static_cast<std::uint32_t>(i), x);
+            
+            // 必须在 map 内
             if (!point_in_rect(cfg.map, x)) {
                 continue;
             }
@@ -879,14 +901,18 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
                 (cfg.hyperbolic_contracted_params.b * x2_sq - x1_sq <= cfg.hyperbolic_contracted_params.c);
             
             if (satisfies_contracted) {
-                valid_mask_contracted[i] = 1;
-                ++valid_contracted_count;
+                contracted_valid_mask[i] = 1;
+                ++contracted_valid_count;
             }
         }
-        std::cout << "GPU: Valid states under contracted constraint: " << valid_contracted_count << std::endl;
+        std::cout << "GPU: States satisfying contracted constraint: " << contracted_valid_count << std::endl;
 
-        GSC_CUDA_CHECK(cudaMemcpy(d_valid_mask_contracted,
-                                  valid_mask_contracted.data(),
+        GSC_CUDA_CHECK(cudaMemcpy(d_valid_mask,
+                                  valid_mask.data(),
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyHostToDevice));
+        GSC_CUDA_CHECK(cudaMemcpy(d_contracted_valid_mask,
+                                  contracted_valid_mask.data(),
                                   state_count * sizeof(std::uint8_t),
                                   cudaMemcpyHostToDevice));
         GSC_CUDA_CHECK(cudaMemcpy(d_candidate_mask,
@@ -929,19 +955,18 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
         auto abstraction_start = std::chrono::steady_clock::now();
         const auto pair_blocks = ceil_div_to_u32(pair_count, threads);
         
-        // 构建 GPU 收缩约束参数
+        // 构建 GPU 原始约束参数
         GpuConstraintParams constraint_params;
         constraint_params.constraint_type = static_cast<int>(cfg.constraint_type);
-        constraint_params.hyperbolic_a = cfg.hyperbolic_contracted_params.a;
-        constraint_params.hyperbolic_b = cfg.hyperbolic_contracted_params.b;
-        constraint_params.hyperbolic_c = cfg.hyperbolic_contracted_params.c;
+        constraint_params.hyperbolic_a = cfg.hyperbolic_params.a;
+        constraint_params.hyperbolic_b = cfg.hyperbolic_params.b;
+        constraint_params.hyperbolic_c = cfg.hyperbolic_params.c;
         constraint_params.elliptic_a = cfg.elliptic_params.a;
         constraint_params.elliptic_b = cfg.elliptic_params.b;
         
-        std::cout << "GPU: Starting abstraction phase with contracted constraints..." << std::endl;
-        std::cout << "GPU: Contracted hyperbolic params: a=" << constraint_params.hyperbolic_a 
-                  << ", b=" << constraint_params.hyperbolic_b 
-                  << ", c=" << constraint_params.hyperbolic_c << std::endl;
+        std::cout << "GPU: Abstracting with ORIGINAL hyperbolic constraint (a=" 
+                  << constraint_params.hyperbolic_a 
+                  << ", c=" << constraint_params.hyperbolic_c << ")" << std::endl;
         
         // 测量抽象kernel耗时
         GSC_CUDA_CHECK(cudaEventRecord(event_start));
@@ -964,7 +989,7 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
         report.abstraction_ms = std::chrono::duration<double, std::milli>(abstraction_stop - abstraction_start).count();
         std::cout << "GPU: Abstraction phase completed in " << report.abstraction_ms << " ms" << std::endl;
 
-        build_prefix_on_device(prepared.state_grid, prefix_layout, d_valid_mask_contracted, d_prefix_valid);
+        build_prefix_on_device(prepared.state_grid, prefix_layout, d_valid_mask, d_prefix_valid);
         GSC_CUDA_CHECK(cudaDeviceSynchronize());
 
         auto solve_start = std::chrono::steady_clock::now();
@@ -1006,7 +1031,7 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
             GSC_CUDA_CHECK(cudaMemset(d_new_reachable, 0, sizeof(unsigned long long)));
             GSC_CUDA_CHECK(cudaMemset(d_new_candidate_certified, 0, sizeof(unsigned long long)));
             const auto state_blocks = ceil_div_to_u32(state_count, threads);
-            reduce_inputs_kernel<<<state_blocks, threads>>>(d_valid_mask_contracted,
+            reduce_inputs_kernel<<<state_blocks, threads>>>(d_contracted_valid_mask,
                                                              d_candidate_mask,
                                                              d_reachable_prev,
                                                              d_reachable_next,
@@ -1097,7 +1122,7 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
         report.result.controller.resize(state_count);
         report.result.reach_step.resize(state_count);
         GSC_CUDA_CHECK(cudaMemcpy(report.result.valid_mask.data(),
-                                  d_valid_mask_contracted,
+                                  d_valid_mask,
                                   state_count * sizeof(std::uint8_t),
                                   cudaMemcpyDeviceToHost));
         GSC_CUDA_CHECK(cudaMemcpy(report.result.candidate_mask.data(),
@@ -1155,7 +1180,8 @@ GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
     cudaFree(d_max_flat);
     cudaFree(d_pair_valid);
     cudaFree(d_pair_satisfied);
-    cudaFree(d_valid_mask_contracted);
+    cudaFree(d_valid_mask);
+    cudaFree(d_contracted_valid_mask);
     cudaFree(d_candidate_mask);
     cudaFree(d_candidate_contracted_mask);
     cudaFree(d_reachable_prev);
