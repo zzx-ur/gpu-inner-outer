@@ -100,40 +100,31 @@ cmake --build build -j $(sysctl -n hw.ncpu)
 ./build/cuda_symbolic_control_cli examples/hyperbolic_case.cfg --gpu-contracted
 
 
-openloop results:
-GPU: Candidate contracted states: 96768
-GPU: Original candidate states: 252000
-GPU: Valid states under original constraint: 1288980
-GPU: States satisfying contracted constraint: 824040
-GPU: Abstracting with ORIGINAL hyperbolic constraint (a=4, c=16)
-GPU: Abstraction phase completed in 420.035 ms
+# results
+
+GPU: Abstraction phase completed in 566.961 ms
 GPU: Starting forward reachability iterations...
-GPU: Iteration 1/100, newly reachable: 74841, newly certified: 148113, total certified: 148113/252000 (coverage: 58.8%) (12.3 ms)
-GPU: Iteration 2/100, newly reachable: 51465, newly certified: 13545, total certified: 161658/252000 (coverage: 64.2%) (12.1 ms)
-GPU: Iteration 3/100, newly reachable: 74515, newly certified: 7359, total certified: 169017/252000 (coverage: 67.1%) (12.1 ms)
-GPU: Iteration 4/100, newly reachable: 66803, newly certified: 6001, total certified: 175018/252000 (coverage: 69.5%) (12.1 ms)
-GPU: Iteration 5/100, newly reachable: 58218, newly certified: 7148, total certified: 182166/252000 (coverage: 72.3%) (12.1 ms)
-GPU: Iteration 10/100, newly reachable: 19226, newly certified: 12358, total certified: 243430/252000 (coverage: 96.6%) (12.0 ms)
-GPU: Reached target coverage of 96.6%
-GPU: Solve phase completed in 121.1 ms
+GPU: Iteration 1/100, newly reachable: 42196, newly certified: 106253, total certified: 106253/161280 (coverage: 65.9%) (17.8 ms)
+GPU: Iteration 2/100, newly reachable: 45437, newly certified: 4213, total certified: 110466/161280 (coverage: 68.5%) (17.6 ms)
+GPU: Iteration 3/100, newly reachable: 67878, newly certified: 2985, total certified: 113451/161280 (coverage: 70.3%) (17.6 ms)
+GPU: Iteration 4/100, newly reachable: 71893, newly certified: 2470, total certified: 115921/161280 (coverage: 71.9%) (17.6 ms)
+GPU: Iteration 5/100, newly reachable: 64957, newly certified: 3562, total certified: 119483/161280 (coverage: 74.1%) (17.6 ms)
+GPU: Iteration 10/100, newly reachable: 25085, newly certified: 9836, total certified: 157055/161280 (coverage: 97.4%) (17.6 ms)
+GPU: Reached target coverage of 97.4%
+GPU: Solve phase completed in 176.2 ms
 GPU: Final status - converged: true, iterations: 10, message: candidate coverage >= 95%
 GPU: Copying abstraction data to host...
 
 [gpu-contracted]
-states        : 3087000
+states        : 4013100
 inputs        : 100
-pairs         : 308700000
-reachable     : 593622
-candidate     : 252000
-candidate ctl : 243430
+pairs         : 401310000
+reachable     : 592398
+candidate     : 161280
+candidate ctl : 157055
 iterations    : 10
 converged     : true
 message       : candidate coverage >= 95%
-abstraction   : 420.0 ms
-solve         : 121.1 ms
-memory total  : 2.96 GiB
-result file   : results/hyperbolic_demo_gpu-contracted.h5
-  - includes abstraction data (2649.6 MB)
-  - includes 10 iteration statistics
-
-  compare with the closed loop approach:
+abstraction   : 567.0 ms
+solve         : 176.2 ms
+memory total  : 3.85 GiB
