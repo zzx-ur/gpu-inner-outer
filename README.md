@@ -68,3 +68,8 @@ git diff HEAD~1
 看某个文件：
 
 git diff HEAD~1 README.md -->
+
+<!-- # 小改动;
+git add -A
+git commit -m "update files"
+git push -->
