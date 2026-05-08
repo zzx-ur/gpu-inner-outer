@@ -41,35 +41,3 @@ cmake --build build -j 8
 
 The current algorithm may have some boundary issues; generally, if the coverage of candidate kinv exceeds 99%, it is considered viable.
 
-## 个人应用远程gpu计算
-# 删除旧 build（可选）
-rm -rf build
-
-# 配置 CUDA 构建
-cmake -S . -B build -DGSC_ENABLE_CUDA=ON
-
-# 编译
-cmake --build build -j 8
-
-# 运行示例
-./build/cuda_symbolic_control_cli examples/hyperbolic_case.cfg --gpu
-
-# 看结果
-<!-- 
-ls -la results/
-
-rm -rf results/*
-git pull
-
-看文件：
-
-git diff HEAD~1
-
-看某个文件：
-
-git diff HEAD~1 README.md -->
-
-<!-- # 小改动;
-git add -A
-git commit -m "update files"
-git push -->
