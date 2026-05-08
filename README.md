@@ -39,5 +39,5 @@ cmake --build build -j 8
 
 ## Potential problem of the existing algorithm
 
-The current algorithm may have some boundary issues; generally, if the coverage of candidate kinv exceeds 99%, it is considered viable.
+The current algorithm may have some boundary issues; generally, if the coverage of candidate kinv exceeds 90%, it is considered viable.
 
