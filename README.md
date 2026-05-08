@@ -137,25 +137,3 @@ result file   : results/hyperbolic_demo_gpu-contracted.h5
   - includes 10 iteration statistics
 
   compare with the closed loop approach:
-[gpu]
-states        : 3087000
-inputs        : 100
-pairs         : 308700000
-reachable     : 831161
-candidate     : 3087000
-candidate ctl : 194271
-iterations    : 19
-converged     : False
-message       : iteration stalled before candidate closure
-abstraction   : 556.7 ms
-solve         : 215.9 ms
-memory total  : 2.89 GiB
-result file   : results/hyperbolic_demo_gpu.h5
-  - includes abstraction data (2649.6 MB)
-  - includes 19 iteration statistics
-  GPU: Iteration 1/100, newly reachable: 68114, newly certified: 152653, total certified: 152653 (coverage: 4.9%) (11.6 ms)
-GPU: Iteration 2/100, newly reachable: 40858, newly certified: 63214, total certified: 215867 (coverage: 6.9%) (11.4 ms)
-GPU: Iteration 3/100, newly reachable: 37532, newly certified: 27232, total certified: 243099 (coverage: 7.8%) (11.4 ms)
-GPU: Iteration 8/100, newly reachable: 20067, newly certified: 7175, total certified: 186294 (coverage: 6.0%) (11.5 ms)
-...
-GPU: Iteration 19/100 - stalled before candidate closure
