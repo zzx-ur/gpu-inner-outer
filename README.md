@@ -55,4 +55,16 @@ cmake --build build -j 8
 ./build/cuda_symbolic_control_cli examples/hyperbolic_case.cfg --gpu
 
 # 看结果
+<!-- 
 ls -la results/
+
+rm -rf results/*
+git pull
+
+看文件：
+
+git diff HEAD~1
+
+看某个文件：
+
+git diff HEAD~1 README.md -->
