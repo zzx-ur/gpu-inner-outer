@@ -341,6 +341,10 @@ CaseConfig load_case_config(const std::string& path) {
             cfg.hyperbolic_contracted_params.b = std::stod(value);
         } else if (key == "hyperbolic_contracted_c") {
             cfg.hyperbolic_contracted_params.c = std::stod(value);
+        } else if (key == "contracted_speed_lb") {
+            cfg.contracted_speed_lb = std::stod(value);
+        } else if (key == "contracted_speed_ub") {
+            cfg.contracted_speed_ub = std::stod(value);
         } else if (key == "elliptic_a") {
             cfg.elliptic_params.a = std::stod(value);
         } else if (key == "elliptic_b") {

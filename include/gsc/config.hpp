@@ -58,6 +58,8 @@ struct CaseConfig {
     ConstraintType constraint_type = ConstraintType::kNone;
     HyperbolicConstraintParams hyperbolic_params;
     HyperbolicConstraintParams hyperbolic_contracted_params;  // 收缩双曲线约束
+    double contracted_speed_lb = 0.0;  // 收缩双曲线的速度维度下界
+    double contracted_speed_ub = 0.0;  // 收缩双曲线的速度维度上界
     EllipticConstraintParams elliptic_params;
     StateConstraintFn custom_constraint;  // 自定义约束函数
 
