@@ -1,0 +1,17 @@
+.DS_Store
+.qoder/
+build/
+build_*/
+cmake-build-*/
+gpu_symbolic_control/
+results/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.raw
+*.log
+__pycache__/
+*.pyc
+*.pyo
