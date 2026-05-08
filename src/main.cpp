@@ -60,7 +60,7 @@ bool same_result(const gsc::SolveResult<std::uint32_t>& a,
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: gsc_cli <config.cfg> [--cpu|--gpu|--compare] [--output result.h5]\n";
+        std::cerr << "usage: gsc_cli <config.cfg> [--cpu|--gpu|--gpu-contracted|--compare] [--output result.h5]\n";
         return 1;
     }
 
@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
         std::string output_path;
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];
-            if (arg == "--cpu" || arg == "--gpu" || arg == "--compare") {
+            if (arg == "--cpu" || arg == "--gpu" || arg == "--gpu-contracted" || arg == "--compare") {
                 mode = arg;
                 continue;
             }
@@ -110,6 +110,25 @@ int main(int argc, char** argv) {
                          gpu.result.candidate_mask, gpu.result, gpu.abstraction_ms, "gpu");
             
             // 使用GPU专用的HDF5写入函数，包含抽象数据和逐迭代统计
+            gsc::write_gpu_results_hdf5(output_path, cfg, gpu);
+            std::cout << "result file   : " << output_path << '\n';
+            std::cout << "  - includes abstraction data (" 
+                      << (gpu.pair_count * (2 * sizeof(std::uint32_t) + sizeof(std::uint8_t)) / (1024.0 * 1024.0))
+                      << " MB)\n";
+            std::cout << "  - includes " << gpu.iteration_stats.size() << " iteration statistics\n";
+            return 0;
+        }
+
+        if (mode == "--gpu-contracted") {
+            // 收缩约束前向可达性模式
+            const auto gpu = gsc::run_contracted_case_cuda_u32(cfg);
+            if (!gpu.executed) {
+                std::cerr << "gpu contracted run unavailable: " << gpu.message << '\n';
+                return 2;
+            }
+            print_summary(gpu.state_grid, gpu.input_grid, gpu.budget, gpu.pair_count,
+                         gpu.result.candidate_mask, gpu.result, gpu.abstraction_ms, "gpu-contracted");
+            
             gsc::write_gpu_results_hdf5(output_path, cfg, gpu);
             std::cout << "result file   : " << output_path << '\n';
             std::cout << "  - includes abstraction data (" 

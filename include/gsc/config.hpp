@@ -50,12 +50,14 @@ struct CaseConfig {
     double input_eta[kInputDim]{0.5, 1.0};
 
     HyperRect4D candidate{};
+    HyperRect4D candidate_contracted{};  // 收缩候选集
     HyperRect4D map{};
     std::vector<HyperRect4D> obstacles;
 
     // 状态约束配置
     ConstraintType constraint_type = ConstraintType::kNone;
     HyperbolicConstraintParams hyperbolic_params;
+    HyperbolicConstraintParams hyperbolic_contracted_params;  // 收缩双曲线约束
     EllipticConstraintParams elliptic_params;
     StateConstraintFn custom_constraint;  // 自定义约束函数
 
@@ -77,6 +79,7 @@ CaseConfig make_default_case();
 CaseConfig make_wraparound_case();
 CaseConfig make_smoke_case();
 CaseConfig make_hyperbolic_case();  // 新增：带双曲线约束的案例
+CaseConfig make_hyperbolic_contracted_case();  // 新增：收缩双曲线约束案例
 CaseConfig load_case_config(const std::string& path);
 
 }  // namespace gsc

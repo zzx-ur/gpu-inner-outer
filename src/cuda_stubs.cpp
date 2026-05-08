@@ -14,6 +14,12 @@ GpuRunReport run_case_cuda_u32(const CaseConfig&) {
     return report;
 }
 
+GpuRunReport run_contracted_case_cuda_u32(const CaseConfig&) {
+    GpuRunReport report;
+    report.message = "CUDA backend was not built";
+    return report;
+}
+
 }  // namespace gsc
 
 #endif

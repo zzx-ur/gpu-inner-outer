@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -735,6 +736,428 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     cudaFree(d_pair_satisfied);
     cudaFree(d_valid_mask);
     cudaFree(d_candidate_mask);
+    cudaFree(d_reachable_prev);
+    cudaFree(d_reachable_next);
+    cudaFree(d_controller);
+    cudaFree(d_reach_step);
+    cudaFree(d_prefix_valid);
+    cudaFree(d_prefix_reachable);
+    cudaFree(d_new_reachable);
+    cudaFree(d_new_candidate_certified);
+    return report;
+}
+
+// 收缩约束前向可达性分析
+// 使用收缩的双曲线约束和收缩的候选集进行前向可达性计算
+// 直到覆盖原始 candidate 达到 ≥95%
+GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg) {
+    GpuRunReport report;
+    report.compiled_with_cuda = true;
+
+    int device_count = 0;
+    GSC_CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    if (device_count <= 0) {
+        report.message = "no CUDA device found";
+        return report;
+    }
+    report.runtime_available = true;
+
+    // 检查是否配置了收缩候选集
+    bool has_contracted = false;
+    for (int i = 0; i < kStateDim; ++i) {
+        if (cfg.candidate_contracted.lb[i] != 0.0 || cfg.candidate_contracted.ub[i] != 0.0) {
+            has_contracted = true;
+            break;
+        }
+    }
+    if (!has_contracted) {
+        report.message = "candidate_contracted not configured";
+        return report;
+    }
+
+    // 检查是否为名义模型（扰动为0）
+    for (int i = 0; i < kStateDim; ++i) {
+        if (cfg.disturbance_half_width[i] != 0.0) {
+            report.message = "contracted mode requires nominal model (disturbance_half_width = 0)";
+            return report;
+        }
+    }
+
+    std::cout << "GPU: Running contracted hyperbolic constraint forward reachability..." << std::endl;
+    std::cout << "GPU: Using contracted candidate set and contracted constraints" << std::endl;
+
+    // GPU-only 模式：仅构建网格和 mask
+    const auto prepared = prepare_case_gpu_minimal<std::uint32_t>(cfg);
+    
+    // 保存网格信息到 report
+    report.state_grid = prepared.state_grid;
+    report.input_grid = prepared.input_grid;
+    report.budget = prepared.budget;
+    report.pair_count = prepared.state_grid.total_size * prepared.input_grid.total_size;
+
+    std::uint32_t* d_min_flat = nullptr;
+    std::uint32_t* d_max_flat = nullptr;
+    std::uint8_t* d_pair_valid = nullptr;
+    std::uint8_t* d_pair_satisfied = nullptr;
+    std::uint8_t* d_valid_mask_contracted = nullptr;
+    std::uint8_t* d_candidate_mask = nullptr;
+    std::uint8_t* d_candidate_contracted_mask = nullptr;
+    std::uint8_t* d_reachable_prev = nullptr;
+    std::uint8_t* d_reachable_next = nullptr;
+    InputIndex* d_controller = nullptr;
+    ReachStep* d_reach_step = nullptr;
+    PrefixCount* d_prefix_valid = nullptr;
+    PrefixCount* d_prefix_reachable = nullptr;
+    unsigned long long* d_new_reachable = nullptr;
+    unsigned long long* d_new_candidate_certified = nullptr;
+
+    try {
+        const auto pair_count = prepared.abstraction.pair_count;
+        const auto state_count = prepared.state_grid.total_size;
+        const auto prefix_layout = build_prefix_layout(prepared.state_grid);
+        const int threads = 256;
+
+        GSC_CUDA_CHECK(cudaMalloc(&d_min_flat, pair_count * sizeof(std::uint32_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_max_flat, pair_count * sizeof(std::uint32_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_pair_valid, pair_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_pair_satisfied, pair_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_valid_mask_contracted, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_candidate_mask, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_candidate_contracted_mask, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_reachable_prev, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_reachable_next, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_controller, state_count * sizeof(InputIndex)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_reach_step, state_count * sizeof(ReachStep)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_prefix_valid, prefix_layout.total_size * sizeof(PrefixCount)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_prefix_reachable, prefix_layout.total_size * sizeof(PrefixCount)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_new_reachable, sizeof(unsigned long long)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_new_candidate_certified, sizeof(unsigned long long)));
+
+        // 构建收缩候选集 mask
+        std::vector<std::uint8_t> candidate_contracted_mask(state_count, 0);
+        std::uint64_t candidate_contracted_count = 0;
+        for (std::uint64_t i = 0; i < state_count; ++i) {
+            double x[kStateDim];
+            prepared.state_grid.center(static_cast<std::uint32_t>(i), x);
+            if (point_in_rect(cfg.candidate_contracted, x)) {
+                candidate_contracted_mask[i] = 1;
+                ++candidate_contracted_count;
+            }
+        }
+        std::cout << "GPU: Candidate contracted states: " << candidate_contracted_count << std::endl;
+
+        // 构建原始候选集 mask（用于计算覆盖率）
+        std::vector<std::uint8_t> candidate_mask(state_count, 0);
+        std::uint64_t candidate_count = 0;
+        for (std::uint64_t i = 0; i < state_count; ++i) {
+            double x[kStateDim];
+            prepared.state_grid.center(static_cast<std::uint32_t>(i), x);
+            if (point_in_rect(cfg.candidate, x)) {
+                candidate_mask[i] = 1;
+                ++candidate_count;
+            }
+        }
+        std::cout << "GPU: Original candidate states: " << candidate_count << std::endl;
+
+        // 构建收缩约束的有效状态 mask
+        std::vector<std::uint8_t> valid_mask_contracted(state_count, 0);
+        std::uint64_t valid_contracted_count = 0;
+        for (std::uint64_t i = 0; i < state_count; ++i) {
+            double x[kStateDim];
+            prepared.state_grid.center(static_cast<std::uint32_t>(i), x);
+            
+            // 检查是否在 map 内
+            if (!point_in_rect(cfg.map, x)) {
+                continue;
+            }
+            
+            // 检查收缩约束
+            const double x1_sq = x[0] * x[0];
+            const double x2_sq = x[1] * x[1];
+            const bool satisfies_contracted = 
+                (x1_sq - x2_sq <= cfg.hyperbolic_contracted_params.a) && 
+                (cfg.hyperbolic_contracted_params.b * x2_sq - x1_sq <= cfg.hyperbolic_contracted_params.c);
+            
+            if (satisfies_contracted) {
+                valid_mask_contracted[i] = 1;
+                ++valid_contracted_count;
+            }
+        }
+        std::cout << "GPU: Valid states under contracted constraint: " << valid_contracted_count << std::endl;
+
+        GSC_CUDA_CHECK(cudaMemcpy(d_valid_mask_contracted,
+                                  valid_mask_contracted.data(),
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyHostToDevice));
+        GSC_CUDA_CHECK(cudaMemcpy(d_candidate_mask,
+                                  candidate_mask.data(),
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyHostToDevice));
+        GSC_CUDA_CHECK(cudaMemcpy(d_candidate_contracted_mask,
+                                  candidate_contracted_mask.data(),
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyHostToDevice));
+
+        // 初始化可达集为收缩候选集
+        std::vector<std::uint8_t> reachable_seed = candidate_contracted_mask;
+        std::vector<InputIndex> controller_seed(state_count, kInvalidInput);
+        std::vector<ReachStep> reach_step_seed(state_count, kUnreachableStep);
+        for (std::uint64_t i = 0; i < state_count; ++i) {
+            if (candidate_contracted_mask[i]) {
+                reach_step_seed[i] = 0;
+            }
+        }
+
+        GSC_CUDA_CHECK(cudaMemcpy(d_reachable_prev,
+                                  reachable_seed.data(),
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyHostToDevice));
+        GSC_CUDA_CHECK(cudaMemcpy(d_controller,
+                                  controller_seed.data(),
+                                  state_count * sizeof(InputIndex),
+                                  cudaMemcpyHostToDevice));
+        GSC_CUDA_CHECK(cudaMemcpy(d_reach_step,
+                                  reach_step_seed.data(),
+                                  state_count * sizeof(ReachStep),
+                                  cudaMemcpyHostToDevice));
+
+        // 创建CUDA Events用于kernel级别计时
+        cudaEvent_t event_start, event_stop;
+        GSC_CUDA_CHECK(cudaEventCreate(&event_start));
+        GSC_CUDA_CHECK(cudaEventCreate(&event_stop));
+        
+        auto abstraction_start = std::chrono::steady_clock::now();
+        const auto pair_blocks = ceil_div_to_u32(pair_count, threads);
+        
+        // 构建 GPU 收缩约束参数
+        GpuConstraintParams constraint_params;
+        constraint_params.constraint_type = static_cast<int>(cfg.constraint_type);
+        constraint_params.hyperbolic_a = cfg.hyperbolic_contracted_params.a;
+        constraint_params.hyperbolic_b = cfg.hyperbolic_contracted_params.b;
+        constraint_params.hyperbolic_c = cfg.hyperbolic_contracted_params.c;
+        constraint_params.elliptic_a = cfg.elliptic_params.a;
+        constraint_params.elliptic_b = cfg.elliptic_params.b;
+        
+        std::cout << "GPU: Starting abstraction phase with contracted constraints..." << std::endl;
+        std::cout << "GPU: Contracted hyperbolic params: a=" << constraint_params.hyperbolic_a 
+                  << ", b=" << constraint_params.hyperbolic_b 
+                  << ", c=" << constraint_params.hyperbolic_c << std::endl;
+        
+        // 测量抽象kernel耗时
+        GSC_CUDA_CHECK(cudaEventRecord(event_start));
+        abstraction_kernel<<<pair_blocks, threads>>>(prepared.state_grid,
+                                                      prepared.input_grid,
+                                                      prepared.model,
+                                                      constraint_params,
+                                                      d_min_flat,
+                                                      d_max_flat,
+                                                      d_pair_valid,
+                                                      pair_count);
+        GSC_CUDA_CHECK(cudaGetLastError());
+        GSC_CUDA_CHECK(cudaEventRecord(event_stop));
+        GSC_CUDA_CHECK(cudaEventSynchronize(event_stop));
+        float abstraction_kernel_time = 0.0f;
+        GSC_CUDA_CHECK(cudaEventElapsedTime(&abstraction_kernel_time, event_start, event_stop));
+        report.kernel_timings.abstraction_kernel_ms = static_cast<double>(abstraction_kernel_time);
+        
+        auto abstraction_stop = std::chrono::steady_clock::now();
+        report.abstraction_ms = std::chrono::duration<double, std::milli>(abstraction_stop - abstraction_start).count();
+        std::cout << "GPU: Abstraction phase completed in " << report.abstraction_ms << " ms" << std::endl;
+
+        build_prefix_on_device(prepared.state_grid, prefix_layout, d_valid_mask_contracted, d_prefix_valid);
+        GSC_CUDA_CHECK(cudaDeviceSynchronize());
+
+        auto solve_start = std::chrono::steady_clock::now();
+        std::uint64_t certified_candidates = 0;
+        std::uint64_t total_reachable = candidate_contracted_count;
+        
+        std::cout << "GPU: Starting forward reachability iterations..." << std::endl;
+        
+        for (std::uint32_t iter = 1; iter <= cfg.max_iterations; ++iter) {
+            auto iter_start = std::chrono::steady_clock::now();
+            IterationStats iter_stats;
+            iter_stats.iteration = iter;
+            
+            // 测量前缀和构建耗时
+            auto prefix_start = std::chrono::steady_clock::now();
+            build_prefix_on_device(prepared.state_grid, prefix_layout, d_reachable_prev, d_prefix_reachable);
+            GSC_CUDA_CHECK(cudaDeviceSynchronize());
+            auto prefix_stop = std::chrono::steady_clock::now();
+            iter_stats.prefix_build_ms = std::chrono::duration<double, std::milli>(prefix_stop - prefix_start).count();
+
+            // 测量满足性检查耗时
+            auto satisfaction_start = std::chrono::steady_clock::now();
+            pair_satisfaction_kernel<<<pair_blocks, threads>>>(prepared.state_grid,
+                                                                prefix_layout,
+                                                                d_prefix_reachable,
+                                                                d_prefix_valid,
+                                                                d_min_flat,
+                                                                d_max_flat,
+                                                                d_pair_valid,
+                                                                d_pair_satisfied,
+                                                                pair_count);
+            GSC_CUDA_CHECK(cudaGetLastError());
+            GSC_CUDA_CHECK(cudaDeviceSynchronize());
+            auto satisfaction_stop = std::chrono::steady_clock::now();
+            iter_stats.satisfaction_check_ms = std::chrono::duration<double, std::milli>(satisfaction_stop - satisfaction_start).count();
+
+            // 测量输入归约耗时
+            auto reduction_start = std::chrono::steady_clock::now();
+            GSC_CUDA_CHECK(cudaMemset(d_new_reachable, 0, sizeof(unsigned long long)));
+            GSC_CUDA_CHECK(cudaMemset(d_new_candidate_certified, 0, sizeof(unsigned long long)));
+            const auto state_blocks = ceil_div_to_u32(state_count, threads);
+            reduce_inputs_kernel<<<state_blocks, threads>>>(d_valid_mask_contracted,
+                                                             d_candidate_mask,
+                                                             d_reachable_prev,
+                                                             d_reachable_next,
+                                                             d_controller,
+                                                             d_reach_step,
+                                                             d_pair_satisfied,
+                                                             state_count,
+                                                             static_cast<std::uint32_t>(prepared.input_grid.total_size),
+                                                             iter,
+                                                             d_new_reachable,
+                                                             d_new_candidate_certified);
+            GSC_CUDA_CHECK(cudaGetLastError());
+            GSC_CUDA_CHECK(cudaDeviceSynchronize());
+
+            unsigned long long h_new_reachable = 0;
+            unsigned long long h_new_candidate_certified = 0;
+            GSC_CUDA_CHECK(cudaMemcpy(&h_new_reachable,
+                                       d_new_reachable,
+                                       sizeof(unsigned long long),
+                                       cudaMemcpyDeviceToHost));
+            GSC_CUDA_CHECK(cudaMemcpy(&h_new_candidate_certified,
+                                       d_new_candidate_certified,
+                                       sizeof(unsigned long long),
+                                       cudaMemcpyDeviceToHost));
+            auto reduction_stop = std::chrono::steady_clock::now();
+            iter_stats.reduction_ms = std::chrono::duration<double, std::milli>(reduction_stop - reduction_start).count();
+
+            // 更新统计信息
+            certified_candidates += h_new_candidate_certified;
+            total_reachable += h_new_reachable;
+            iter_stats.newly_reachable = h_new_reachable;
+            iter_stats.newly_certified = h_new_candidate_certified;
+            iter_stats.total_reachable = total_reachable;
+            iter_stats.total_certified = certified_candidates;
+            
+            auto iter_stop = std::chrono::steady_clock::now();
+            iter_stats.iteration_ms = std::chrono::duration<double, std::milli>(iter_stop - iter_start).count();
+            
+            // 保存迭代统计
+            report.iteration_stats.push_back(iter_stats);
+            
+            std::swap(d_reachable_prev, d_reachable_next);
+            report.result.iterations = iter;
+            
+            // 计算覆盖率（相对于原始 candidate）
+            const double coverage = candidate_count == 0 
+                ? 100.0 
+                : 100.0 * static_cast<double>(certified_candidates) / static_cast<double>(candidate_count);
+            
+            // Print progress
+            if (cfg.verbose && (iter <= 5 || iter % 10 == 0 || iter == cfg.max_iterations)) {
+                std::cout << "GPU: Iteration " << iter << "/" << cfg.max_iterations 
+                          << ", newly reachable: " << h_new_reachable 
+                          << ", newly certified: " << h_new_candidate_certified
+                          << ", total certified: " << certified_candidates << "/" << candidate_count
+                          << " (coverage: " << std::fixed << std::setprecision(1) << coverage << "%)"
+                          << " (" << iter_stats.iteration_ms << " ms)"
+                          << std::endl;
+            }
+
+            // 终止条件：覆盖率 >= 95%
+            if (coverage >= 95.0) {
+                report.result.converged = true;
+                report.result.message = "candidate coverage >= 95%";
+                std::cout << "GPU: Reached target coverage of " << coverage << "%" << std::endl;
+                break;
+            }
+            
+            if (h_new_reachable == 0 && h_new_candidate_certified == 0) {
+                report.result.message = "iteration stalled at coverage " + 
+                    std::to_string(static_cast<int>(coverage)) + "%";
+                std::cout << "GPU: Iteration stalled at coverage " << coverage << "%" << std::endl;
+                break;
+            }
+        }
+        auto solve_stop = std::chrono::steady_clock::now();
+        report.solve_ms = std::chrono::duration<double, std::milli>(solve_stop - solve_start).count();
+        
+        std::cout << "GPU: Solve phase completed in " << report.solve_ms << " ms" << std::endl;
+        std::cout << "GPU: Final status - converged: " << (report.result.converged ? "true" : "false") 
+                  << ", iterations: " << report.result.iterations
+                  << ", message: " << report.result.message << std::endl;
+
+        // 复制结果数据到主机
+        report.result.valid_mask.resize(state_count);
+        report.result.candidate_mask.resize(state_count);
+        report.result.reachable_mask.resize(state_count);
+        report.result.controller.resize(state_count);
+        report.result.reach_step.resize(state_count);
+        GSC_CUDA_CHECK(cudaMemcpy(report.result.valid_mask.data(),
+                                  d_valid_mask_contracted,
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyDeviceToHost));
+        GSC_CUDA_CHECK(cudaMemcpy(report.result.candidate_mask.data(),
+                                  d_candidate_mask,
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyDeviceToHost));
+        GSC_CUDA_CHECK(cudaMemcpy(report.result.reachable_mask.data(),
+                                  d_reachable_prev,
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyDeviceToHost));
+        GSC_CUDA_CHECK(cudaMemcpy(report.result.controller.data(),
+                                  d_controller,
+                                  state_count * sizeof(InputIndex),
+                                  cudaMemcpyDeviceToHost));
+        GSC_CUDA_CHECK(cudaMemcpy(report.result.reach_step.data(),
+                                  d_reach_step,
+                                  state_count * sizeof(ReachStep),
+                                  cudaMemcpyDeviceToHost));
+
+        // 复制抽象数据到主机
+        std::cout << "GPU: Copying abstraction data to host..." << std::endl;
+        report.abstraction_min_flat.resize(pair_count);
+        report.abstraction_max_flat.resize(pair_count);
+        report.abstraction_valid.resize(pair_count);
+        GSC_CUDA_CHECK(cudaMemcpy(report.abstraction_min_flat.data(),
+                                  d_min_flat,
+                                  pair_count * sizeof(std::uint32_t),
+                                  cudaMemcpyDeviceToHost));
+        GSC_CUDA_CHECK(cudaMemcpy(report.abstraction_max_flat.data(),
+                                  d_max_flat,
+                                  pair_count * sizeof(std::uint32_t),
+                                  cudaMemcpyDeviceToHost));
+        GSC_CUDA_CHECK(cudaMemcpy(report.abstraction_valid.data(),
+                                  d_pair_valid,
+                                  pair_count * sizeof(std::uint8_t),
+                                  cudaMemcpyDeviceToHost));
+
+        report.result.reachable_states =
+            std::count(report.result.reachable_mask.begin(), report.result.reachable_mask.end(), std::uint8_t{1});
+        report.result.certified_candidate_states = certified_candidates;
+        report.result.solve_ms = report.solve_ms;
+        report.executed = true;
+        if (!report.result.converged && report.result.message.empty()) {
+            report.result.message = "maximum iterations reached";
+        }
+        
+        // 清理CUDA Events
+        cudaEventDestroy(event_start);
+        cudaEventDestroy(event_stop);
+    } catch (const std::exception& ex) {
+        report.message = ex.what();
+    }
+
+    cudaFree(d_min_flat);
+    cudaFree(d_max_flat);
+    cudaFree(d_pair_valid);
+    cudaFree(d_pair_satisfied);
+    cudaFree(d_valid_mask_contracted);
+    cudaFree(d_candidate_mask);
+    cudaFree(d_candidate_contracted_mask);
     cudaFree(d_reachable_prev);
     cudaFree(d_reachable_next);
     cudaFree(d_controller);

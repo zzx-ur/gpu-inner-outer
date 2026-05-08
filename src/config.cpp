@@ -288,6 +288,10 @@ CaseConfig load_case_config(const std::string& path) {
             assign_array4(parse_csv_doubles(value), cfg.candidate.lb, "candidate_lb");
         } else if (key == "candidate_ub") {
             assign_array4(parse_csv_doubles(value), cfg.candidate.ub, "candidate_ub");
+        } else if (key == "candidate_contracted_lb") {
+            assign_array4(parse_csv_doubles(value), cfg.candidate_contracted.lb, "candidate_contracted_lb");
+        } else if (key == "candidate_contracted_ub") {
+            assign_array4(parse_csv_doubles(value), cfg.candidate_contracted.ub, "candidate_contracted_ub");
         } else if (key == "map_lb") {
             assign_array4(parse_csv_doubles(value), cfg.map.lb, "map_lb");
         } else if (key == "map_ub") {
@@ -331,6 +335,12 @@ CaseConfig load_case_config(const std::string& path) {
             cfg.hyperbolic_params.b = std::stod(value);
         } else if (key == "hyperbolic_c") {
             cfg.hyperbolic_params.c = std::stod(value);
+        } else if (key == "hyperbolic_contracted_a") {
+            cfg.hyperbolic_contracted_params.a = std::stod(value);
+        } else if (key == "hyperbolic_contracted_b") {
+            cfg.hyperbolic_contracted_params.b = std::stod(value);
+        } else if (key == "hyperbolic_contracted_c") {
+            cfg.hyperbolic_contracted_params.c = std::stod(value);
         } else if (key == "elliptic_a") {
             cfg.elliptic_params.a = std::stod(value);
         } else if (key == "elliptic_b") {

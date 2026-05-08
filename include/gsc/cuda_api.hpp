@@ -59,5 +59,6 @@ struct GpuRunReport {
 
 bool cuda_backend_compiled();
 GpuRunReport run_case_cuda_u32(const CaseConfig& cfg);
+GpuRunReport run_contracted_case_cuda_u32(const CaseConfig& cfg);  // 收缩约束前向可达性
 
 }  // namespace gsc
