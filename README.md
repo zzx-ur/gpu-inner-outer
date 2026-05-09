@@ -1,6 +1,7 @@
 # CUDA Symbolic Control
 
 C++17/CUDA project implementing grid symbolic control for K-invariance verification.
+hardware : RTX 4090 24G
 
 ## Quick Start
 
