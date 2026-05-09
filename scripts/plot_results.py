@@ -330,24 +330,25 @@ def render_sets3d(args: argparse.Namespace, np, plt, measure, loaded) -> Path:
         if len(x1_left) > 0:
             x2_pos_left = np.sqrt(x1_left**2 - 4.0)
             x2_neg_left = -x2_pos_left
-            ax.plot(x1_left, x2_pos_left, [theta_val]*len(x1_left), 'r-', linewidth=2.5, zorder=100)
-            ax.plot(x1_left, x2_neg_left, [theta_val]*len(x1_left), 'r-', linewidth=2.5, zorder=100)
+            # ax.plot(x1_left, x2_pos_left, [theta_val]*len(x1_left), 'r-', linewidth=2.5, zorder=100)
+            ax.plot(x1_left, x2_pos_left, [theta_val]*len(x1_left), 'r-', linewidth=2.5)
+            ax.plot(x1_left, x2_neg_left, [theta_val]*len(x1_left), 'r-', linewidth=2.5)
 
         # 右半支: x >= 2
         x1_right = x_line[x_line >= 2.0]
         if len(x1_right) > 0:
             x2_pos_right = np.sqrt(x1_right**2 - 4.0)
             x2_neg_right = -x2_pos_right
-            ax.plot(x1_right, x2_pos_right, [theta_val]*len(x1_right), 'r-', linewidth=2.5, zorder=100)
-            ax.plot(x1_right, x2_neg_right, [theta_val]*len(x1_right), 'r-', linewidth=2.5, zorder=100)
+            ax.plot(x1_right, x2_pos_right, [theta_val]*len(x1_right), 'r-', linewidth=2.5)
+            ax.plot(x1_right, x2_neg_right, [theta_val]*len(x1_right), 'r-', linewidth=2.5)
         
         # For constraint 2: b*x2^2 - x1^2 = c  =>  x2 = ±sqrt((x1^2 + c) / b)
         # 这个约束没有定义域截断，可以直接整体画
         # b = 4.0, c = 16.0
         x2_pos_c2 = np.sqrt((x_line**2 + 16.0) / 4.0)
         x2_neg_c2 = -x2_pos_c2
-        ax.plot(x_line, x2_pos_c2, [theta_val]*len(x_line), 'r-', linewidth=2.5, zorder=100)
-        ax.plot(x_line, x2_neg_c2, [theta_val]*len(x_line), 'r-', linewidth=2.5, zorder=100)
+        ax.plot(x_line, x2_pos_c2, [theta_val]*len(x_line), 'r-', linewidth=2.5)
+        ax.plot(x_line, x2_neg_c2, [theta_val]*len(x_line), 'r-', linewidth=2.5)
     # Set labels with bold and larger font
     ax.set_xlabel("x", fontsize=14, fontweight='bold')
     ax.set_ylabel("y", fontsize=14, fontweight='bold')
