@@ -128,12 +128,5 @@ cmake -S . -B build -DGSC_ENABLE_CUDA=ON
 cmake --build build -j 8
 ```
 
-## GPU Performance Characteristics
-
-| Problem Size | Memory Usage | Abstraction Time |
-|--------------|--------------|------------------|
-| 10^6 pairs | ~50 MB | 10-100 ms |
-| 10^8 pairs | ~5 GB | 1-10 s |
-| 10^9 pairs | ~50 GB | 10-100 s |
 
 See `ALGORITHM.md` for memory estimation formulas.
