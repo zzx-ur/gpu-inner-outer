@@ -310,9 +310,11 @@ def main():
     """主函数"""
     import os
     
-    # 文件路径
-    h5_path = '/Users/zhixin/Documents/symbol_control/kinv_gpu/results/hyperbolic_demo_gpu.h5'
-    output_dir = '/Users/zhixin/Documents/symbol_control/kinv_gpu/plots'
+    # 文件路径（使用相对路径以支持远程执行）
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    h5_path = os.path.join(project_root, 'results', 'hyperbolic_demo_gpu.h5')
+    output_dir = script_dir
     output_path = os.path.join(output_dir, 'simulation_results.mat')
     
     # 检查h5文件是否存在
