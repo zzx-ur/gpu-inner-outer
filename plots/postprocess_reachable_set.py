@@ -64,16 +64,16 @@ class ReachableSetExtractor:
         
         Returns:
             reachable_points: (N, 3) 数组，包含所有可达点的物理坐标 [x, y, theta]
-            reachable_mask_3d: (shape[1], shape[2], shape[3]) 3D掩码（投影速度维度）
+            reachable_mask_3d: (shape[0], shape[1], shape[2]) 3D掩码（投影速度维度）
         """
-        # 重塑为4D网格
+        # 重塑为4D网格 [speed, x, y, theta]
         reachable_4d = self.reachable_mask.reshape(
             self.state_shape[0], self.state_shape[1], 
             self.state_shape[2], self.state_shape[3]
         )
         
         # 交换维度顺序以匹配MATLAB约定 [y, x, theta, speed]
-        reachable_4d = np.transpose(reachable_4d, [1, 0, 2, 3])
+        reachable_4d = np.transpose(reachable_4d, [2, 1, 3, 0])
         
         # 投影速度维度：如果任何速度值为可达，则该(x,y,theta)点可达
         reachable_3d = np.any(reachable_4d != 0, axis=3)
@@ -90,7 +90,7 @@ class ReachableSetExtractor:
         从3D可达集合提取等值面顶点
         
         Args:
-            reachable_3d: (shape[0], shape[1], shape[2]) 3D掩码
+            reachable_3d: (shape[0], shape[1], shape[2]) 3D掩码 [x, y, theta]
         
         Returns:
             vertices_phys: (N, 3) 物理坐标顶点
@@ -100,17 +100,23 @@ class ReachableSetExtractor:
             from skimage import measure
             
             # 使用marching cubes算法提取等值面
+            # 需要转置到 [theta, y, x] 以匹配MATLAB的isosurface约定
+            reachable_vol = np.transpose(reachable_3d, [2, 1, 0])
+            
             verts_idx, faces, _, _ = measure.marching_cubes(
-                reachable_3d.astype(float),
+                reachable_vol.astype(float),
                 level=0.5,
-                spacing=(self.state_eta[0], self.state_eta[1], self.state_eta[2])
+                spacing=(self.state_eta[2], self.state_eta[1], self.state_eta[0])
             )
             
-            # 映射到物理坐标
-            vertices_phys = np.zeros_like(verts_idx)
-            vertices_phys[:, 0] = self.state_lb[0] + verts_idx[:, 0]  # x
-            vertices_phys[:, 1] = self.state_lb[1] + verts_idx[:, 1]  # y
-            vertices_phys[:, 2] = self.state_lb[2] + verts_idx[:, 2]  # theta
+            # 映射到物理坐标，使用正确的偏移 (verts - 0.5) * eta
+            vertices_phys = np.zeros_like(verts_idx, dtype=float)
+            vertices_phys[:, 0] = self.state_lb[2] + (verts_idx[:, 0] - 0.5) * self.state_eta[2]  # theta
+            vertices_phys[:, 1] = self.state_lb[1] + (verts_idx[:, 1] - 0.5) * self.state_eta[1]  # y
+            vertices_phys[:, 2] = self.state_lb[0] + (verts_idx[:, 2] - 0.5) * self.state_eta[0]  # x
+            
+            # 重新排列为 [x, y, theta]
+            vertices_phys = vertices_phys[:, [2, 1, 0]]
             
             print(f"✓ 等值面提取完成，顶点数: {len(vertices_phys)}, 面片数: {len(faces)}")
             
@@ -183,12 +189,12 @@ class ReachableSetExtractor:
             'reachable_faces': faces.astype(np.int32) if len(faces) > 0 else np.array([]),
             'candidate_vertices': candidate_verts,
             'candidate_faces': np.array([
-                [1, 2, 3, 4],
-                [5, 6, 7, 8],
-                [1, 2, 6, 5],
-                [3, 4, 8, 7],
-                [1, 4, 8, 5],
-                [2, 3, 7, 6]
+                [0, 1, 2, 3],
+                [4, 5, 6, 7],
+                [0, 1, 5, 4],
+                [2, 3, 7, 6],
+                [0, 3, 7, 4],
+                [1, 2, 6, 5]
             ], dtype=np.int32),
             'state_lb': self.state_lb,
             'state_ub': self.state_ub,

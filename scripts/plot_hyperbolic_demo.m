@@ -1,7 +1,6 @@
 %% Visualize hyperbolic_demo_gpu.h5 - Candidate vs Reachable 3D Plot
 %
 % Usage: Open and run this script in MATLAB (or press F5)
-% This script loads pre-extracted reachable set from reachable_set.mat
 
 clear; close all; clc;
 
@@ -9,6 +8,10 @@ clear; close all; clc;
 % Determine project root (parent of scripts/)
 script_dir = fileparts(mfilename('fullpath'));
 project_root = fileparts(script_dir);
+
+% 请确保 h5 文件路径正确
+result_file = fullfile(project_root, 'results', 'hyperbolic_demo_gpu.h5');
+run_label   = 'gpu';
 
 % 优化了颜色搭配，使其对比更明显 (参考之前成功的配色)
 candidate_color  = [0.2, 0.2, 0.6]; % 深紫蓝色
@@ -18,29 +21,60 @@ reachable_alpha  = 0.2;
 azim             = 100;
 elev             = 16;
 
-%% Load data from extracted reachable set
-mat_file = fullfile(project_root, 'plots', 'reachable_set.mat');
-fprintf('Loading extracted reachable set from %s...\n', mat_file);
+%% Load data
+fprintf('Loading %s (run: %s)...\n', result_file, run_label);
 
-if ~isfile(mat_file)
-    error('Reachable set file not found: %s\nPlease run: python3 plots/postprocess_reachable_set.py', mat_file);
-end
+% Read metadata
+shape = double(h5read(result_file, '/state/shape')');
+lb    = h5read(result_file, '/state/lb')';
+eta   = h5read(result_file, '/state/eta')';
 
-data = load(mat_file);
+% Read candidate bounds from config
+candidate_lb = h5read(result_file, '/config/candidate_lb')';
+candidate_ub = h5read(result_file, '/config/candidate_ub')';
 
-% Extract data from loaded structure
-reachable_verts_phys = data.reachable_vertices;
-reach_faces = data.reachable_faces;
-candidate_verts_phys = data.candidate_vertices;
-cand_faces_rect = data.candidate_faces;
+cand_x_min = candidate_lb(1); cand_x_max = candidate_ub(1);
+cand_y_min = candidate_lb(2); cand_y_max = candidate_ub(2);
+cand_theta_min = candidate_lb(3); cand_theta_max = candidate_ub(3);
 
-% Get state space bounds for axis limits
-lb = data.state_lb;
-eta = data.state_eta;
-shape = data.state_shape;
+% Load candidate and reachable masks
+run_path = sprintf('/result/%s', run_label);
+candidate_raw = h5read(result_file, fullfile(run_path, 'candidate_mask'));
+reachable_raw = h5read(result_file, fullfile(run_path, 'reachable_mask'));
 
-fprintf('✓ Loaded reachable set with %d vertices and %d faces\n', ...
-    size(reachable_verts_phys, 1), size(reach_faces, 1));
+%% Reshape to 4D grid 
+candidate_4d = reshape(candidate_raw, shape(1), shape(2), shape(3), shape(4));
+candidate_4d = permute(candidate_4d, [2 1 3 4]);  % [y, x, theta, speed]
+
+reachable_4d = reshape(reachable_raw, shape(1), shape(2), shape(3), shape(4));
+reachable_4d = permute(reachable_4d, [2 1 3 4]);
+
+% Project speed dimension
+candidate_xyz = any(candidate_4d ~= 0, 4);  
+reachable_xyz = any(reachable_4d ~= 0, 4);
+
+%% Extract isosurface for reachable set
+reachable_vol = permute(reachable_xyz, [2 1 3]);
+[reach_faces, reach_verts] = isosurface(reachable_vol, 0.5);
+
+% Map reachable vertices to physical coordinates
+reach_y = lb(2) + (reach_verts(:,1) - 0.5) * eta(2);
+reach_x = lb(1) + (reach_verts(:,2) - 0.5) * eta(1);
+reach_theta = lb(3) + (reach_verts(:,3) - 0.5) * eta(3);
+reachable_verts_phys = [reach_x, reach_y, reach_theta];
+
+%% Define candidate set as rectangular prism
+C = [cand_x_min, cand_y_min, cand_theta_min;
+     cand_x_max, cand_y_min, cand_theta_min;
+     cand_x_max, cand_y_max, cand_theta_min;
+     cand_x_min, cand_y_max, cand_theta_min;
+     cand_x_min, cand_y_min, cand_theta_max;
+     cand_x_max, cand_y_min, cand_theta_max;
+     cand_x_max, cand_y_max, cand_theta_max;
+     cand_x_min, cand_y_max, cand_theta_max];
+
+cand_faces_rect = [1 2 3 4; 5 6 7 8; 1 2 6 5; 3 4 8 7; 1 4 8 5; 2 3 7 6];
+candidate_verts_phys = C;
 
 %% Create plot
 fig = figure('Color', 'white', 'Position', [100 100 1100 850]);
@@ -48,14 +82,14 @@ ax = axes('Parent', fig);
 hold(ax, 'on');
 
 % Plot candidate set
-if size(candidate_verts_phys, 1) >= 8
+if exist('cand_faces_rect', 'var') && size(candidate_verts_phys, 1) >= 8
     patch(ax, 'Faces', cand_faces_rect, 'Vertices', candidate_verts_phys, ...
           'FaceColor', candidate_color, 'FaceAlpha', candidate_alpha, ...
           'EdgeColor', 'k', 'LineWidth', 1.5);
 end
 
 % Plot reachable set
-if ~isempty(reach_faces) && size(reachable_verts_phys, 1) > 0
+if ~isempty(reach_faces)
     patch(ax, 'Faces', reach_faces, 'Vertices', reachable_verts_phys, ...
           'FaceColor', reachable_color, 'FaceAlpha', reachable_alpha, ...
           'EdgeColor', 'none');
