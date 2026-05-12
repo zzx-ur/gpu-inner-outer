@@ -38,37 +38,65 @@ cmake --build build -j 8
 └── legacy/                # Archived MATLAB code
 ```
 
-## Potential problem of the existing algorithm
-
-The current algorithm may have some boundary issues; generally, if the coverage of candidate kinv exceeds 90%, it is considered viable.
 
 ## Results
 
-GPU: Starting abstraction phase with 308700000 state-input pairs...
-GPU: Abstraction phase completed in 783.722 ms (kernel: 783.652 ms)
-GPU: Iteration 1/100, newly reachable: 37737, newly certified: 210434, total certified: 210434/252000 (12.9378 ms)
-GPU: Iteration 2/100, newly reachable: 67308, newly certified: 1424, total certified: 211858/252000 (12.7981 ms)
-GPU: Iteration 3/100, newly reachable: 94968, newly certified: 2730, total certified: 214588/252000 (12.7799 ms)
-GPU: Iteration 4/100, newly reachable: 112363, newly certified: 2785, total certified: 217373/252000 (12.7452 ms)
-GPU: Iteration 5/100, newly reachable: 99473, newly certified: 3232, total certified: 220605/252000 (12.5986 ms)
-GPU: Iteration 10/100, newly reachable: 34319, newly certified: 4014, total certified: 251660/252000 (12.4909 ms)
-GPU: Solve phase completed in 151.604 ms
-GPU: Final status - converged: true, iterations: 12, message: all candidate states obtained a controller
-GPU: Copying abstraction data to host (2649.59 MB)...
-
 [gpu]
-states        : 3087000
+states        : 4013100
 inputs        : 100
-pairs         : 308700000
-reachable     : 1004958
-candidate     : 252000
-candidate ctl : 252000
+pairs         : 401310000
+reachable     : 1142689
+candidate     : 161280
+candidate ctl : 161280
 iterations    : 12
 converged     : true
 message       : all candidate states obtained a controller
-abstraction   : 783.722 ms
-solve         : 151.604 ms
-memory total  : 2.96 GiB
+abstraction   : 1002.53 ms
+solve         : 214.936 ms
+memory total  : 3.85 GiB
+
+[GPU Detailed Timing]
+=== Abstraction Phase ===
+  Kernel execution      : 1002.46 ms
+  H2D memcpy            : 41.545 ms
+  Total abstraction     : 1002.53 ms
+
+=== Reachability Iteration Phase ===
+  Prefix build (total)  : 3.41363 ms
+  Pair satisfaction     : 207.635 ms
+  Reduce inputs         : 3.55184 ms
+  Iteration memcpy      : 0.21035 ms
+  Total solve           : 214.936 ms
+
+=== Result Copy Phase ===
+  D2H memcpy            : 2869.32 ms
+
+=== Summary ===
+  Total kernel time     : 1217.06 ms
+  Total memcpy time     : 2911.08 ms
+  Total compute time    : 4128.14 ms
+  Total elapsed time    : 1217.47 ms
+
+=== GPU Memory Usage ===
+  Abstraction data      : 3.36 GiB
+  Prefix sum data       : 68.92 MiB
+  Iteration data        : 45.93 MiB
+  Total allocated       : 3.48 GiB
+  Peak usage            : 4.25 GiB
+
+=== Per-Iteration Breakdown (first 5 and last 5) ===
+  Iter 1: 18.0966 ms total [prefix: 0.293492 ms, satisfaction: 17.3113 ms, reduction: 0.491322 ms] -> 52481 new reachable, 123510 new certified
+  Iter 2: 18.0345 ms total [prefix: 0.28482 ms, satisfaction: 17.3104 ms, reduction: 0.438891 ms] -> 57431 new reachable, 1097 new certified
+  Iter 3: 17.9946 ms total [prefix: 0.283121 ms, satisfaction: 17.2934 ms, reduction: 0.41772 ms] -> 91549 new reachable, 1502 new certified
+  Iter 4: 17.9563 ms total [prefix: 0.283601 ms, satisfaction: 17.2824 ms, reduction: 0.38993 ms] -> 122322 new reachable, 1501 new certified
+  Iter 5: 17.915 ms total [prefix: 0.28432 ms, satisfaction: 17.2794 ms, reduction: 0.350821 ms] -> 129220 new reachable, 1459 new certified
+  ...
+  Iter 8: 17.8205 ms total [prefix: 0.28284 ms, satisfaction: 17.2838 ms, reduction: 0.25349 ms] -> 94948 new reachable, 5579 new certified
+  Iter 9: 17.7998 ms total [prefix: 0.28278 ms, satisfaction: 17.2833 ms, reduction: 0.23329 ms] -> 78464 new reachable, 7315 new certified
+  Iter 10: 17.7951 ms total [prefix: 0.28432 ms, satisfaction: 17.2969 ms, reduction: 0.21347 ms] -> 64643 new reachable, 7976 new certified
+  Iter 11: 17.8138 ms total [prefix: 0.282501 ms, satisfaction: 17.326 ms, reduction: 0.204851 ms] -> 43185 new reachable, 3937 new certified
+  Iter 12: 17.8678 ms total [prefix: 0.283761 ms, satisfaction: 17.3849 ms, reduction: 0.198609 ms] -> 16768 new reachable, 130 new certified
+
 result file   : results/hyperbolic_demo_gpu.h5
-  - includes abstraction data (2649.59 MB)
+  - includes abstraction data (3444.47 MB)
   - includes 12 iteration statistics
