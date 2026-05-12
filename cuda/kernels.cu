@@ -417,12 +417,12 @@ void build_prefix_on_device(const Grid4D<std::uint32_t>& grid,
     // Time scatter_mask_kernel
     GSC_CUDA_CHECK(cudaEventRecord(event_start));
     scatter_mask_kernel<<<scatter_blocks, threads>>>(grid, layout, mask, prefix);
-    GSC_CUDA_CHECK(cudaGetLastError());
-    GSC_CUDA_CHECK(cudaEventRecord(event_stop));
-    GSC_CUDA_CHECK(cudaEventSynchronize(event_stop));
-    float scatter_time = 0.0f;
-    GSC_UD_CHECK(cudaEventElapsedTime(&scatter_time, event_start, event_stop));
-    kernel_timings.scatter_mask_ms += static_cast<double>(scatter_time);
+     GSC_CUDA_CHECK(cudaGetLastError());
+     GSC_CUDA_CHECK(cudaEventRecord(event_stop));
+     GSC_CUDA_CHECK(cudaEventSynchronize(event_stop));
+     float scatter_time = 0.0f;
+     GSC_CUDA_CHECK(cudaEventElapsedTime(&scatter_time, event_start, event_stop));
+     kernel_timings.scatter_mask_ms += static_cast<double>(scatter_time);
 
     const std::uint64_t lines0 = static_cast<std::uint64_t>(layout.padded_shape[1]) *
                                  layout.padded_shape[2] *
@@ -644,8 +644,8 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
          std::cout << "  - Kernel execution: " << report.kernel_timings.abstraction_kernel_ms << " ms" << std::endl;
          std::cout << "  - H2D memcpy: " << report.kernel_timings.abstraction_memcpy_h2d_ms << " ms" << std::endl;
 
-        build_prefix_on_device(prepared.state_grid, prefix_layout, d_valid_mask, d_prefix_valid);
-        GSC_CUDA_CHECK(cudaDeviceSynchronize());
+         build_prefix_on_device(prepared.state_grid, prefix_layout, d_valid_mask, d_prefix_valid, report.kernel_timings);
+         GSC_CUDA_CHECK(cudaDeviceSynchronize());
 
         auto solve_start = std::chrono::steady_clock::now();
         std::uint64_t certified_candidates = 0;
@@ -656,12 +656,12 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
             IterationStats iter_stats;
             iter_stats.iteration = iter;
             
-            // 测量前缀和构建耗时
-            auto prefix_start = std::chrono::steady_clock::now();
-            build_prefix_on_device(prepared.state_grid, prefix_layout, d_reachable_prev, d_prefix_reachable);
-            GSC_CUDA_CHECK(cudaDeviceSynchronize());
-            auto prefix_stop = std::chrono::steady_clock::now();
-            iter_stats.prefix_build_ms = std::chrono::duration<double, std::milli>(prefix_stop - prefix_start).count();
+             // 测量前缀和构建耗时
+             auto prefix_start = std::chrono::steady_clock::now();
+             build_prefix_on_device(prepared.state_grid, prefix_layout, d_reachable_prev, d_prefix_reachable, report.kernel_timings);
+             GSC_CUDA_CHECK(cudaDeviceSynchronize());
+             auto prefix_stop = std::chrono::steady_clock::now();
+             iter_stats.prefix_build_ms = std::chrono::duration<double, std::milli>(prefix_stop - prefix_start).count();
 
             // 测量满足性检查耗时
             auto satisfaction_start = std::chrono::steady_clock::now();
