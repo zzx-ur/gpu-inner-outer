@@ -499,17 +499,22 @@ void write_gpu_results_hdf5(const std::string& output_path,
         write_vector(iterations.get(), "reduction_ms", reduction_ms);
     }
 
-    // 写入kernel级别计时
-    write_scalar(timings.get(), "abstraction_kernel_ms", gpu_report.kernel_timings.abstraction_kernel_ms);
-    write_scalar(timings.get(), "scatter_mask_ms", gpu_report.kernel_timings.scatter_mask_ms);
-    write_scalar(timings.get(), "scan_axis0_ms", gpu_report.kernel_timings.scan_axis0_ms);
-    write_scalar(timings.get(), "scan_axis1_ms", gpu_report.kernel_timings.scan_axis1_ms);
-    write_scalar(timings.get(), "scan_axis2_ms", gpu_report.kernel_timings.scan_axis2_ms);
-    write_scalar(timings.get(), "scan_axis3_ms", gpu_report.kernel_timings.scan_axis3_ms);
-    write_scalar(timings.get(), "pair_satisfaction_ms", gpu_report.kernel_timings.pair_satisfaction_ms);
-    write_scalar(timings.get(), "reduce_inputs_ms", gpu_report.kernel_timings.reduce_inputs_ms);
-    write_scalar(timings.get(), "memcpy_h2d_ms", gpu_report.kernel_timings.memcpy_h2d_ms);
-    write_scalar(timings.get(), "memcpy_d2h_ms", gpu_report.kernel_timings.memcpy_d2h_ms);
+     // 写入kernel级别计时
+     write_scalar(timings.get(), "abstraction_kernel_ms", gpu_report.kernel_timings.abstraction_kernel_ms);
+     write_scalar(timings.get(), "abstraction_memcpy_h2d_ms", gpu_report.kernel_timings.abstraction_memcpy_h2d_ms);
+     write_scalar(timings.get(), "scatter_mask_ms", gpu_report.kernel_timings.scatter_mask_ms);
+     write_scalar(timings.get(), "scan_axis0_ms", gpu_report.kernel_timings.scan_axis0_ms);
+     write_scalar(timings.get(), "scan_axis1_ms", gpu_report.kernel_timings.scan_axis1_ms);
+     write_scalar(timings.get(), "scan_axis2_ms", gpu_report.kernel_timings.scan_axis2_ms);
+     write_scalar(timings.get(), "scan_axis3_ms", gpu_report.kernel_timings.scan_axis3_ms);
+     write_scalar(timings.get(), "prefix_build_total_ms", gpu_report.kernel_timings.prefix_build_total_ms);
+     write_scalar(timings.get(), "pair_satisfaction_ms", gpu_report.kernel_timings.pair_satisfaction_ms);
+     write_scalar(timings.get(), "reduce_inputs_ms", gpu_report.kernel_timings.reduce_inputs_ms);
+     write_scalar(timings.get(), "iteration_memcpy_ms", gpu_report.kernel_timings.iteration_memcpy_ms);
+     write_scalar(timings.get(), "result_memcpy_d2h_ms", gpu_report.kernel_timings.result_memcpy_d2h_ms);
+     write_scalar(timings.get(), "total_kernel_ms", gpu_report.kernel_timings.total_kernel_ms);
+     write_scalar(timings.get(), "total_memcpy_ms", gpu_report.kernel_timings.total_memcpy_ms);
+     write_scalar(timings.get(), "total_compute_ms", gpu_report.kernel_timings.total_compute_ms);
 
 #else
     (void)output_path;

@@ -38,6 +38,70 @@ void print_summary(const gsc::Grid4D<StateIndex>& state_grid,
     std::cout << "memory total  : " << gsc::format_bytes(budget.total_bytes) << '\n';
 }
 
+void print_gpu_detailed_timing(const gsc::GpuRunReport& gpu) {
+    std::cout << "\n[GPU Detailed Timing]\n";
+    std::cout << "=== Abstraction Phase ===\n";
+    std::cout << "  Kernel execution      : " << gpu.kernel_timings.abstraction_kernel_ms << " ms\n";
+    std::cout << "  H2D memcpy            : " << gpu.kernel_timings.abstraction_memcpy_h2d_ms << " ms\n";
+    std::cout << "  Total abstraction     : " << gpu.abstraction_ms << " ms\n";
+    
+    std::cout << "\n=== Reachability Iteration Phase ===\n";
+    std::cout << "  Prefix build (total)  : " << gpu.kernel_timings.prefix_build_total_ms << " ms\n";
+    std::cout << "  Pair satisfaction     : " << gpu.kernel_timings.pair_satisfaction_ms << " ms\n";
+    std::cout << "  Reduce inputs         : " << gpu.kernel_timings.reduce_inputs_ms << " ms\n";
+    std::cout << "  Iteration memcpy      : " << gpu.kernel_timings.iteration_memcpy_ms << " ms\n";
+    std::cout << "  Total solve           : " << gpu.solve_ms << " ms\n";
+    
+    std::cout << "\n=== Result Copy Phase ===\n";
+    std::cout << "  D2H memcpy            : " << gpu.kernel_timings.result_memcpy_d2h_ms << " ms\n";
+    
+    std::cout << "\n=== Summary ===\n";
+    std::cout << "  Total kernel time     : " << gpu.kernel_timings.total_kernel_ms << " ms\n";
+    std::cout << "  Total memcpy time     : " << gpu.kernel_timings.total_memcpy_ms << " ms\n";
+    std::cout << "  Total compute time    : " << gpu.kernel_timings.total_compute_ms << " ms\n";
+    std::cout << "  Total elapsed time    : " << gpu.total_ms << " ms\n";
+    
+    std::cout << "\n=== GPU Memory Usage ===\n";
+    std::cout << "  Abstraction data      : " << gsc::format_bytes(gpu.memory_stats.abstraction_bytes) << "\n";
+    std::cout << "  Prefix sum data       : " << gsc::format_bytes(gpu.memory_stats.prefix_bytes) << "\n";
+    std::cout << "  Iteration data        : " << gsc::format_bytes(gpu.memory_stats.iteration_bytes) << "\n";
+    std::cout << "  Total allocated       : " << gsc::format_bytes(gpu.memory_stats.total_allocated_bytes) << "\n";
+    std::cout << "  Peak usage            : " << gsc::format_bytes(gpu.memory_stats.peak_usage_bytes) << "\n";
+    
+    if (!gpu.iteration_stats.empty()) {
+        std::cout << "\n=== Per-Iteration Breakdown (first 5 and last 5) ===\n";
+        const auto& stats = gpu.iteration_stats;
+        const int show_count = std::min(5, static_cast<int>(stats.size()));
+        
+        for (int i = 0; i < show_count; ++i) {
+            const auto& s = stats[i];
+            std::cout << "  Iter " << s.iteration << ": "
+                      << s.iteration_ms << " ms total"
+                      << " [prefix: " << s.prefix_build_ms << " ms"
+                      << ", satisfaction: " << s.satisfaction_check_ms << " ms"
+                      << ", reduction: " << s.reduction_ms << " ms]"
+                      << " -> " << s.newly_reachable << " new reachable, "
+                      << s.newly_certified << " new certified\n";
+        }
+        
+        if (stats.size() > 2 * show_count) {
+            std::cout << "  ...\n";
+        }
+        
+        for (int i = std::max(show_count, static_cast<int>(stats.size()) - show_count); 
+             i < static_cast<int>(stats.size()); ++i) {
+            const auto& s = stats[i];
+            std::cout << "  Iter " << s.iteration << ": "
+                      << s.iteration_ms << " ms total"
+                      << " [prefix: " << s.prefix_build_ms << " ms"
+                      << ", satisfaction: " << s.satisfaction_check_ms << " ms"
+                      << ", reduction: " << s.reduction_ms << " ms]"
+                      << " -> " << s.newly_reachable << " new reachable, "
+                      << s.newly_certified << " new certified\n";
+        }
+    }
+}
+
 template <typename StateIndex>
 void print_summary(const gsc::PreparedCase<StateIndex>& prepared,
                    const gsc::SolveResult<StateIndex>& result,
@@ -109,9 +173,12 @@ int main(int argc, char** argv) {
             print_summary(gpu.state_grid, gpu.input_grid, gpu.budget, gpu.pair_count,
                          gpu.result.candidate_mask, gpu.result, gpu.abstraction_ms, "gpu");
             
+            // 打印详细的计时和显存信息
+            print_gpu_detailed_timing(gpu);
+            
             // 使用GPU专用的HDF5写入函数，包含抽象数据和逐迭代统计
             gsc::write_gpu_results_hdf5(output_path, cfg, gpu);
-            std::cout << "result file   : " << output_path << '\n';
+            std::cout << "\nresult file   : " << output_path << '\n';
             std::cout << "  - includes abstraction data (" 
                       << (gpu.pair_count * (2 * sizeof(std::uint32_t) + sizeof(std::uint8_t)) / (1024.0 * 1024.0))
                       << " MB)\n";
@@ -133,8 +200,12 @@ int main(int argc, char** argv) {
 
             print_summary(prepared, cpu_result, "cpu");
             print_summary(prepared, gpu.result, "gpu");
+            
+            // 打印GPU的详细计时和显存信息
+            print_gpu_detailed_timing(gpu);
+            
             gsc::write_results_hdf5(output_path, cfg, prepared, {{"cpu", &cpu_result}, {"gpu", &gpu.result}});
-            std::cout << "result file   : " << output_path << '\n';
+            std::cout << "\nresult file   : " << output_path << '\n';
             std::cout << "exact_match   : " << (same_result(cpu_result, gpu.result) ? "true" : "false") << '\n';
             return same_result(cpu_result, gpu.result) ? 0 : 3;
         }
