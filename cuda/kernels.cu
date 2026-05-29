@@ -72,55 +72,23 @@ __device__ bool d_satisfies_constraint(const double x[kStateDim], const GpuConst
     }
 }
 
-// 检查索引盒内所有状态是否满足约束
-__device__ bool d_box_satisfies_constraint(const Grid4D<std::uint32_t>& grid,
-                                           const IndexBox4D& box,
-                                           const GpuConstraintParams& params) {
-    if (params.constraint_type == 0) {
-        return true;  // 无约束
-    }
+// 使用前缀和快速检查盒内所有状态是否满足约束
+// 返回 true 表示盒内所有有效状态都满足约束
+__device__ bool d_box_satisfies_constraint_fast(const Grid4D<std::uint32_t>& grid,
+                                                const PrefixLayout4D& layout,
+                                                const PrefixCount* prefix_constraint,
+                                                const PrefixCount* prefix_valid,
+                                                const IndexBox4D& box) {
+    // 查询盒内满足约束的状态数
+    const PrefixCount constraint_count = d_query_box_count(grid, layout, prefix_constraint, 
+                                                           grid.flatten(box.min), grid.flatten(box.max));
     
-    const int wrap_dim = grid.wrap_dim;
-    const bool has_wrap = (box.min[wrap_dim] > box.max[wrap_dim]);
+    // 查询盒内有效的状态数
+    const PrefixCount valid_count = d_query_box_count(grid, layout, prefix_valid,
+                                                      grid.flatten(box.min), grid.flatten(box.max));
     
-    // 遍历盒内所有状态
-    for (std::uint32_t w = box.min[3]; w <= box.max[3]; ++w) {
-        for (std::uint32_t z = box.min[2]; ; ++z) {
-            // 处理 wrap-around
-            bool in_range_z = false;
-            if (wrap_dim == 2 && has_wrap) {
-                in_range_z = (z >= box.min[2] || z <= box.max[2]);
-            } else {
-                in_range_z = (z <= box.max[2]);
-            }
-            
-            if (!in_range_z && z > box.max[2] && (!has_wrap || z >= grid.shape[2])) {
-                break;
-            }
-            
-            for (std::uint32_t y = box.min[1]; y <= box.max[1]; ++y) {
-                for (std::uint32_t x = box.min[0]; x <= box.max[0]; ++x) {
-                    std::uint32_t idx[kStateDim] = {x, y, z, w};
-                    double center[kStateDim];
-                    std::uint32_t flat = grid.flatten(idx);
-                    grid.center(flat, center);
-                    
-                    if (!d_satisfies_constraint(center, params)) {
-                        return false;
-                    }
-                }
-            }
-            
-            // wrap-around 处理
-            if (wrap_dim == 2 && has_wrap && z == grid.shape[2] - 1) {
-                z = static_cast<std::uint32_t>(-1);  // 下一轮 ++z 变成 0
-            } else if (z == box.max[2]) {
-                break;
-            }
-        }
-    }
-    
-    return true;
+    // 所有有效状态都满足约束当且仅当两个计数相等
+    return constraint_count == valid_count;
 }
 
 __device__ PrefixCount d_query_box_single(const PrefixLayout4D& layout,
@@ -165,6 +133,9 @@ __global__ void abstraction_kernel(Grid4D<std::uint32_t> state_grid,
                                    InputGrid2D input_grid,
                                    Unicycle4DModel model,
                                    GpuConstraintParams constraint_params,
+                                   PrefixLayout4D layout,
+                                   const PrefixCount* prefix_constraint,
+                                   const PrefixCount* prefix_valid,
                                    std::uint32_t* min_flat,
                                    std::uint32_t* max_flat,
                                    std::uint8_t* valid,
@@ -203,8 +174,8 @@ __global__ void abstraction_kernel(Grid4D<std::uint32_t> state_grid,
         return;
     }
 
-    // 检查后继盒内所有状态是否满足约束
-    if (!d_box_satisfies_constraint(state_grid, box, constraint_params)) {
+    // 使用前缀和快速检查后继盒内所有状态是否满足约束
+    if (!d_box_satisfies_constraint_fast(state_grid, layout, prefix_constraint, prefix_valid, box)) {
         valid[tid] = 0;
         min_flat[tid] = 0;
         max_flat[tid] = 0;
@@ -214,6 +185,19 @@ __global__ void abstraction_kernel(Grid4D<std::uint32_t> state_grid,
     valid[tid] = 1;
     min_flat[tid] = state_grid.flatten(box.min);
     max_flat[tid] = state_grid.flatten(box.max);
+}
+
+__global__ void build_constraint_mask_kernel(const Grid4D<std::uint32_t> state_grid,
+                                              const GpuConstraintParams constraint_params,
+                                              std::uint8_t* constraint_mask) {
+    const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (flat >= state_grid.total_size) {
+        return;
+    }
+
+    double center[kStateDim];
+    state_grid.center(static_cast<std::uint32_t>(flat), center);
+    constraint_mask[flat] = d_satisfies_constraint(center, constraint_params) ? 1 : 0;
 }
 
 __global__ void scatter_mask_kernel(const Grid4D<std::uint32_t> state_grid,
@@ -516,11 +500,13 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     std::uint8_t* d_pair_satisfied = nullptr;
     std::uint8_t* d_valid_mask = nullptr;
     std::uint8_t* d_candidate_mask = nullptr;
+    std::uint8_t* d_constraint_mask = nullptr;
     std::uint8_t* d_reachable_prev = nullptr;
     std::uint8_t* d_reachable_next = nullptr;
     InputIndex* d_controller = nullptr;
     ReachStep* d_reach_step = nullptr;
     PrefixCount* d_prefix_valid = nullptr;
+    PrefixCount* d_prefix_constraint = nullptr;
     PrefixCount* d_prefix_reachable = nullptr;
     unsigned long long* d_new_reachable = nullptr;
     unsigned long long* d_new_candidate_certified = nullptr;
@@ -533,8 +519,8 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
 
         // 计算显存分配量
         std::uint64_t abstraction_mem = pair_count * sizeof(std::uint32_t) * 2 + pair_count * sizeof(std::uint8_t);
-        std::uint64_t prefix_mem = prefix_layout.total_size * sizeof(PrefixCount) * 2;
-        std::uint64_t iteration_mem = state_count * sizeof(std::uint8_t) * 4 + 
+        std::uint64_t prefix_mem = prefix_layout.total_size * sizeof(PrefixCount) * 3;  // valid, constraint, reachable
+        std::uint64_t iteration_mem = state_count * sizeof(std::uint8_t) * 5 +  // valid, candidate, constraint, reachable_prev, reachable_next
                                       state_count * sizeof(InputIndex) + 
                                       state_count * sizeof(ReachStep) + 
                                       sizeof(unsigned long long) * 2;
@@ -550,11 +536,13 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
         GSC_CUDA_CHECK(cudaMalloc(&d_pair_satisfied, pair_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_valid_mask, state_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_candidate_mask, state_count * sizeof(std::uint8_t)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_constraint_mask, state_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_reachable_prev, state_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_reachable_next, state_count * sizeof(std::uint8_t)));
         GSC_CUDA_CHECK(cudaMalloc(&d_controller, state_count * sizeof(InputIndex)));
         GSC_CUDA_CHECK(cudaMalloc(&d_reach_step, state_count * sizeof(ReachStep)));
         GSC_CUDA_CHECK(cudaMalloc(&d_prefix_valid, prefix_layout.total_size * sizeof(PrefixCount)));
+        GSC_CUDA_CHECK(cudaMalloc(&d_prefix_constraint, prefix_layout.total_size * sizeof(PrefixCount)));
         GSC_CUDA_CHECK(cudaMalloc(&d_prefix_reachable, prefix_layout.total_size * sizeof(PrefixCount)));
         GSC_CUDA_CHECK(cudaMalloc(&d_new_reachable, sizeof(unsigned long long)));
         GSC_CUDA_CHECK(cudaMalloc(&d_new_candidate_certified, sizeof(unsigned long long)));
@@ -618,24 +606,52 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
         constraint_params.elliptic_a = cfg.elliptic_params.a;
         constraint_params.elliptic_b = cfg.elliptic_params.b;
         
-        std::cout << "GPU: Starting abstraction phase with " << pair_count << " state-input pairs..." << std::endl;
-        
-        // 测量抽象kernel耗时
-        GSC_CUDA_CHECK(cudaEventRecord(event_start));
-        abstraction_kernel<<<pair_blocks, threads>>>(prepared.state_grid,
+         std::cout << "GPU: Starting abstraction phase with " << pair_count << " state-input pairs..." << std::endl;
+         
+         // 构建约束掩码
+         std::cout << "GPU: Building constraint mask..." << std::endl;
+         const auto state_blocks = ceil_div_to_u32(state_count, threads);
+         GSC_CUDA_CHECK(cudaEventRecord(event_start));
+         build_constraint_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
+                                                                  constraint_params,
+                                                                  d_constraint_mask);
+         GSC_CUDA_CHECK(cudaGetLastError());
+         GSC_CUDA_CHECK(cudaEventRecord(event_stop));
+         GSC_CUDA_CHECK(cudaEventSynchronize(event_stop));
+         float constraint_mask_time = 0.0f;
+         GSC_CUDA_CHECK(cudaEventElapsedTime(&constraint_mask_time, event_start, event_stop));
+         report.kernel_timings.scatter_mask_ms += static_cast<double>(constraint_mask_time);
+         
+         // 构建约束前缀和
+         std::cout << "GPU: Building constraint prefix sum..." << std::endl;
+         build_prefix_on_device(prepared.state_grid, prefix_layout, d_constraint_mask, d_prefix_constraint, report.kernel_timings);
+         GSC_CUDA_CHECK(cudaDeviceSynchronize());
+         
+         // 构建有效掩码前缀和
+         std::cout << "GPU: Building valid mask prefix sum..." << std::endl;
+         build_prefix_on_device(prepared.state_grid, prefix_layout, d_valid_mask, d_prefix_valid, report.kernel_timings);
+         GSC_CUDA_CHECK(cudaDeviceSynchronize());
+         
+         // 测量抽象kernel耗时
+         std::cout << "GPU: Running abstraction kernel..." << std::endl;
+         GSC_CUDA_CHECK(cudaEventRecord(event_start));
+         abstraction_kernel<<<pair_blocks, threads>>>(prepared.state_grid,
                                                       prepared.input_grid,
                                                       prepared.model,
                                                       constraint_params,
+                                                      prefix_layout,
+                                                      d_prefix_constraint,
+                                                      d_prefix_valid,
                                                       d_min_flat,
                                                       d_max_flat,
                                                       d_pair_valid,
                                                       pair_count);
-        GSC_CUDA_CHECK(cudaGetLastError());
-        GSC_CUDA_CHECK(cudaEventRecord(event_stop));
-        GSC_CUDA_CHECK(cudaEventSynchronize(event_stop));
-        float abstraction_kernel_time = 0.0f;
-        GSC_CUDA_CHECK(cudaEventElapsedTime(&abstraction_kernel_time, event_start, event_stop));
-        report.kernel_timings.abstraction_kernel_ms = static_cast<double>(abstraction_kernel_time);
+         GSC_CUDA_CHECK(cudaGetLastError());
+         GSC_CUDA_CHECK(cudaEventRecord(event_stop));
+         GSC_CUDA_CHECK(cudaEventSynchronize(event_stop));
+         float abstraction_kernel_time = 0.0f;
+         GSC_CUDA_CHECK(cudaEventElapsedTime(&abstraction_kernel_time, event_start, event_stop));
+         report.kernel_timings.abstraction_kernel_ms = static_cast<double>(abstraction_kernel_time);
         
          auto abstraction_stop = std::chrono::steady_clock::now();
          report.abstraction_ms = std::chrono::duration<double, std::milli>(abstraction_stop - abstraction_start).count();
@@ -863,11 +879,13 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     cudaFree(d_pair_satisfied);
     cudaFree(d_valid_mask);
     cudaFree(d_candidate_mask);
+    cudaFree(d_constraint_mask);
     cudaFree(d_reachable_prev);
     cudaFree(d_reachable_next);
     cudaFree(d_controller);
     cudaFree(d_reach_step);
     cudaFree(d_prefix_valid);
+    cudaFree(d_prefix_constraint);
     cudaFree(d_prefix_reachable);
     cudaFree(d_new_reachable);
     cudaFree(d_new_candidate_certified);
