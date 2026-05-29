@@ -72,6 +72,13 @@ __device__ bool d_satisfies_constraint(const double x[kStateDim], const GpuConst
     }
 }
 
+// 前向声明
+__device__ PrefixCount d_query_box_count(const Grid4D<std::uint32_t>& grid,
+                                         const PrefixLayout4D& layout,
+                                         const PrefixCount* data,
+                                         std::uint32_t min_flat,
+                                         std::uint32_t max_flat);
+
 // 使用前缀和快速检查盒内所有状态是否满足约束
 // 返回 true 表示盒内所有有效状态都满足约束
 __device__ bool d_box_satisfies_constraint_fast(const Grid4D<std::uint32_t>& grid,
