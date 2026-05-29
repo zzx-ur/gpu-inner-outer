@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(cuda_symbolic_control LANGUAGES CXX)
+project(cuda_symbolic_control LANGUAGES CXX C)
 
 include(CheckLanguage)
 include(CTest)
