@@ -217,48 +217,6 @@ __global__ void abstraction_kernel(Grid4D<std::uint32_t> state_grid,
     max_flat[tid] = state_grid.flatten(box.max);
 }
 
-    const std::uint64_t state = tid / input_grid.total_size;
-    const std::uint64_t input = tid % input_grid.total_size;
-
-    double x[kStateDim];
-    double u[kInputDim];
-    double min_coord[kStateDim];
-    double max_coord[kStateDim];
-
-    state_grid.center(static_cast<std::uint32_t>(state), x);
-    
-    // 检查当前状态是否满足约束
-    if (!d_satisfies_constraint(x, constraint_params)) {
-        valid[tid] = 0;
-        min_flat[tid] = 0;
-        max_flat[tid] = 0;
-        return;
-    }
-    
-    input_grid.center(static_cast<InputIndex>(input), u);
-    model.successor_box(x, u, state_grid.eta, min_coord, max_coord);
-
-    IndexBox4D box{};
-    if (!continuous_box_to_index_box(state_grid, min_coord, max_coord, &box)) {
-        valid[tid] = 0;
-        min_flat[tid] = 0;
-        max_flat[tid] = 0;
-        return;
-    }
-
-    // 使用前缀和快速检查后继盒内所有状态是否满足约束
-    if (!d_box_satisfies_constraint_fast(state_grid, layout, prefix_constraint, prefix_valid, box)) {
-        valid[tid] = 0;
-        min_flat[tid] = 0;
-        max_flat[tid] = 0;
-        return;
-    }
-
-    valid[tid] = 1;
-    min_flat[tid] = state_grid.flatten(box.min);
-    max_flat[tid] = state_grid.flatten(box.max);
-}
-
 __global__ void build_constraint_mask_kernel(const Grid4D<std::uint32_t> state_grid,
                                                const GpuConstraintParams constraint_params,
                                                std::uint8_t* constraint_mask) {
@@ -688,7 +646,6 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
             h_obstacles.push_back(gpu_obs);
         }
         
-        GpuObstacle* d_obstacles = nullptr;
         if (!h_obstacles.empty()) {
             GSC_CUDA_CHECK(cudaMalloc(&d_obstacles, h_obstacles.size() * sizeof(GpuObstacle)));
             GSC_CUDA_CHECK(cudaMemcpy(d_obstacles,
@@ -751,20 +708,10 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
         auto abstraction_start = std::chrono::steady_clock::now();
         const auto pair_blocks = ceil_div_to_u32(pair_count, threads);
         
-        // 构建 GPU 约束参数
-        GpuConstraintParams constraint_params;
-        constraint_params.constraint_type = static_cast<int>(cfg.constraint_type);
-        constraint_params.hyperbolic_a = cfg.hyperbolic_params.a;
-        constraint_params.hyperbolic_b = cfg.hyperbolic_params.b;
-        constraint_params.hyperbolic_c = cfg.hyperbolic_params.c;
-        constraint_params.elliptic_a = cfg.elliptic_params.a;
-        constraint_params.elliptic_b = cfg.elliptic_params.b;
-        
          std::cout << "GPU: Starting abstraction phase with " << pair_count << " state-input pairs..." << std::endl;
          
          // 构建约束掩码
          std::cout << "GPU: Building constraint mask..." << std::endl;
-         const auto state_blocks = ceil_div_to_u32(state_count, threads);
          GSC_CUDA_CHECK(cudaEventRecord(event_start));
          build_constraint_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
                                                                   constraint_params,
@@ -853,7 +800,6 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
              auto reduction_start = std::chrono::steady_clock::now();
              GSC_CUDA_CHECK(cudaMemset(d_new_reachable, 0, sizeof(unsigned long long)));
              GSC_CUDA_CHECK(cudaMemset(d_new_candidate_certified, 0, sizeof(unsigned long long)));
-             const auto state_blocks = ceil_div_to_u32(state_count, threads);
              reduce_inputs_kernel<<<state_blocks, threads>>>(d_valid_mask,
                                                               d_candidate_mask,
                                                               d_reachable_prev,
