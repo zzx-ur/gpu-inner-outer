@@ -51,6 +51,18 @@ struct GpuConstraintParams {
     double elliptic_b;
 };
 
+// GPU 端地图和障碍物参数结构
+struct GpuMapParams {
+    double map_lb[kStateDim];
+    double map_ub[kStateDim];
+    // 注意：障碍物数组需要单独传递
+};
+
+struct GpuObstacle {
+    double lb[kStateDim];
+    double ub[kStateDim];
+};
+
 // 设备端约束检查函数
 __device__ bool d_satisfies_constraint(const double x[kStateDim], const GpuConstraintParams& params) {
     switch (params.constraint_type) {
@@ -70,6 +82,16 @@ __device__ bool d_satisfies_constraint(const double x[kStateDim], const GpuConst
         default:
             return true;
     }
+}
+
+// 设备端点在矩形内检查
+__device__ bool d_point_in_rect(const double lb[kStateDim], const double ub[kStateDim], const double x[kStateDim]) {
+    for (int dim = 0; dim < kStateDim; ++dim) {
+        if (x[dim] < lb[dim] || x[dim] > ub[dim]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // 前向声明
@@ -137,20 +159,63 @@ __device__ PrefixCount d_query_box_count(const Grid4D<std::uint32_t>& grid,
 }
 
 __global__ void abstraction_kernel(Grid4D<std::uint32_t> state_grid,
-                                   InputGrid2D input_grid,
-                                   Unicycle4DModel model,
-                                   GpuConstraintParams constraint_params,
-                                   PrefixLayout4D layout,
-                                   const PrefixCount* prefix_constraint,
-                                   const PrefixCount* prefix_valid,
-                                   std::uint32_t* min_flat,
-                                   std::uint32_t* max_flat,
-                                   std::uint8_t* valid,
-                                   std::uint64_t pair_count) {
+                                    InputGrid2D input_grid,
+                                    Unicycle4DModel model,
+                                    GpuConstraintParams constraint_params,
+                                    PrefixLayout4D layout,
+                                    const PrefixCount* prefix_constraint,
+                                    const PrefixCount* prefix_valid,
+                                    std::uint32_t* min_flat,
+                                    std::uint32_t* max_flat,
+                                    std::uint8_t* valid,
+                                    std::uint64_t pair_count) {
     const std::uint64_t tid = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (tid >= pair_count) {
         return;
     }
+
+    const std::uint64_t state = tid / input_grid.total_size;
+    const std::uint64_t input = tid % input_grid.total_size;
+
+    double x[kStateDim];
+    double u[kInputDim];
+    double min_coord[kStateDim];
+    double max_coord[kStateDim];
+
+    state_grid.center(static_cast<std::uint32_t>(state), x);
+    
+    // 检查当前状态是否满足约束
+    if (!d_satisfies_constraint(x, constraint_params)) {
+        valid[tid] = 0;
+        min_flat[tid] = 0;
+        max_flat[tid] = 0;
+        return;
+    }
+    
+    input_grid.center(static_cast<InputIndex>(input), u);
+    model.successor_box(x, u, state_grid.eta, min_coord, max_coord);
+
+    IndexBox4D box{};
+    if (!continuous_box_to_index_box(state_grid, min_coord, max_coord, &box)) {
+        valid[tid] = 0;
+        min_flat[tid] = 0;
+        max_flat[tid] = 0;
+        return;
+    }
+
+    // 使用前缀和快速检查后继盒内所有状态是否都满足约束
+    // 算法：计算盒内满足约束的状态数和有效状态数，两者相等则所有有效状态都满足约束
+    if (!d_box_satisfies_constraint_fast(state_grid, layout, prefix_constraint, prefix_valid, box)) {
+        valid[tid] = 0;
+        min_flat[tid] = 0;
+        max_flat[tid] = 0;
+        return;
+    }
+
+    valid[tid] = 1;
+    min_flat[tid] = state_grid.flatten(box.min);
+    max_flat[tid] = state_grid.flatten(box.max);
+}
 
     const std::uint64_t state = tid / input_grid.total_size;
     const std::uint64_t input = tid % input_grid.total_size;
@@ -195,8 +260,8 @@ __global__ void abstraction_kernel(Grid4D<std::uint32_t> state_grid,
 }
 
 __global__ void build_constraint_mask_kernel(const Grid4D<std::uint32_t> state_grid,
-                                              const GpuConstraintParams constraint_params,
-                                              std::uint8_t* constraint_mask) {
+                                               const GpuConstraintParams constraint_params,
+                                               std::uint8_t* constraint_mask) {
     const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (flat >= state_grid.total_size) {
         return;
@@ -205,6 +270,42 @@ __global__ void build_constraint_mask_kernel(const Grid4D<std::uint32_t> state_g
     double center[kStateDim];
     state_grid.center(static_cast<std::uint32_t>(flat), center);
     constraint_mask[flat] = d_satisfies_constraint(center, constraint_params) ? 1 : 0;
+}
+
+// GPU kernel：构建 valid_mask（包含 map、obstacles 和约束检查）
+__global__ void build_valid_mask_kernel(const Grid4D<std::uint32_t> state_grid,
+                                        const GpuMapParams map_params,
+                                        const GpuObstacle* obstacles,
+                                        std::uint32_t obstacle_count,
+                                        const GpuConstraintParams constraint_params,
+                                        std::uint8_t* valid_mask) {
+    const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (flat >= state_grid.total_size) {
+        return;
+    }
+
+    double center[kStateDim];
+    state_grid.center(static_cast<std::uint32_t>(flat), center);
+    
+    // 检查是否在 map 内
+    bool valid = d_point_in_rect(map_params.map_lb, map_params.map_ub, center);
+    
+    // 检查是否在障碍物内
+    if (valid) {
+        for (std::uint32_t i = 0; i < obstacle_count; ++i) {
+            if (d_point_in_rect(obstacles[i].lb, obstacles[i].ub, center)) {
+                valid = false;
+                break;
+            }
+        }
+    }
+    
+    // 检查是否满足状态约束
+    if (valid) {
+        valid = d_satisfies_constraint(center, constraint_params);
+    }
+    
+    valid_mask[flat] = valid ? 1 : 0;
 }
 
 __global__ void scatter_mask_kernel(const Grid4D<std::uint32_t> state_grid,
@@ -508,6 +609,7 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     std::uint8_t* d_valid_mask = nullptr;
     std::uint8_t* d_candidate_mask = nullptr;
     std::uint8_t* d_constraint_mask = nullptr;
+    GpuObstacle* d_obstacles = nullptr;
     std::uint8_t* d_reachable_prev = nullptr;
     std::uint8_t* d_reachable_next = nullptr;
     InputIndex* d_controller = nullptr;
@@ -559,10 +661,55 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
         // 测量初始化阶段的memcpy
         auto init_memcpy_start = std::chrono::steady_clock::now();
         
-        GSC_CUDA_CHECK(cudaMemcpy(d_valid_mask,
-                                  prepared.valid_mask.data(),
-                                  state_count * sizeof(std::uint8_t),
-                                  cudaMemcpyHostToDevice));
+        // 构建 GPU 约束参数
+        GpuConstraintParams constraint_params;
+        constraint_params.constraint_type = static_cast<int>(cfg.constraint_type);
+        constraint_params.hyperbolic_a = cfg.hyperbolic_params.a;
+        constraint_params.hyperbolic_b = cfg.hyperbolic_params.b;
+        constraint_params.hyperbolic_c = cfg.hyperbolic_params.c;
+        constraint_params.elliptic_a = cfg.elliptic_params.a;
+        constraint_params.elliptic_b = cfg.elliptic_params.b;
+        
+        // 构建 GPU map 参数
+        GpuMapParams map_params;
+        for (int dim = 0; dim < kStateDim; ++dim) {
+            map_params.map_lb[dim] = cfg.map.lb[dim];
+            map_params.map_ub[dim] = cfg.map.ub[dim];
+        }
+        
+        // 将障碍物复制到 GPU
+        std::vector<GpuObstacle> h_obstacles;
+        for (const auto& obs : cfg.obstacles) {
+            GpuObstacle gpu_obs;
+            for (int dim = 0; dim < kStateDim; ++dim) {
+                gpu_obs.lb[dim] = obs.lb[dim];
+                gpu_obs.ub[dim] = obs.ub[dim];
+            }
+            h_obstacles.push_back(gpu_obs);
+        }
+        
+        GpuObstacle* d_obstacles = nullptr;
+        if (!h_obstacles.empty()) {
+            GSC_CUDA_CHECK(cudaMalloc(&d_obstacles, h_obstacles.size() * sizeof(GpuObstacle)));
+            GSC_CUDA_CHECK(cudaMemcpy(d_obstacles,
+                                      h_obstacles.data(),
+                                      h_obstacles.size() * sizeof(GpuObstacle),
+                                      cudaMemcpyHostToDevice));
+        }
+        
+        // 在 GPU 上构建 valid_mask
+        std::cout << "GPU: Building valid mask on device..." << std::endl;
+        const auto state_blocks = ceil_div_to_u32(state_count, threads);
+        build_valid_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
+                                                           map_params,
+                                                           d_obstacles,
+                                                           static_cast<std::uint32_t>(h_obstacles.size()),
+                                                           constraint_params,
+                                                           d_valid_mask);
+        GSC_CUDA_CHECK(cudaGetLastError());
+        GSC_CUDA_CHECK(cudaDeviceSynchronize());
+        
+        // 复制 candidate_mask 到 GPU
         GSC_CUDA_CHECK(cudaMemcpy(d_candidate_mask,
                                   prepared.candidate_mask.data(),
                                   state_count * sizeof(std::uint8_t),
@@ -887,6 +1034,7 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     cudaFree(d_valid_mask);
     cudaFree(d_candidate_mask);
     cudaFree(d_constraint_mask);
+    cudaFree(d_obstacles);
     cudaFree(d_reachable_prev);
     cudaFree(d_reachable_next);
     cudaFree(d_controller);

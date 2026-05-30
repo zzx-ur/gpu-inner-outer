@@ -107,6 +107,7 @@ inline std::vector<std::uint8_t> build_valid_mask(const Grid4D<StateIndex>& grid
 
 // 检查索引盒内的所有状态是否都满足状态约束
 // 返回 true 表示所有状态都满足约束
+// 注意：此函数仅用于 CPU 版本，GPU 版本使用前缀和快速检查
 template <typename StateIndex>
 inline bool box_satisfies_constraint(const Grid4D<StateIndex>& grid,
                                      const IndexBox4D& box,
@@ -162,12 +163,25 @@ template <typename StateIndex>
 inline PairAbstraction<StateIndex> build_abstraction_cpu(const Grid4D<StateIndex>& state_grid,
                                                          const InputGrid2D& input_grid,
                                                          const Unicycle4DModel& model,
-                                                         const CaseConfig& cfg) {
+                                                         const CaseConfig& cfg,
+                                                         const std::vector<std::uint8_t>& valid_mask) {
     PairAbstraction<StateIndex> abstraction;
     abstraction.pair_count = state_grid.total_size * input_grid.total_size;
     abstraction.min_flat.assign(abstraction.pair_count, 0);
     abstraction.max_flat.assign(abstraction.pair_count, 0);
     abstraction.valid.assign(abstraction.pair_count, 0);
+
+    // 构建约束掩码和前缀和
+    std::vector<std::uint8_t> constraint_mask(state_grid.total_size, 0);
+    for (std::uint64_t flat = 0; flat < state_grid.total_size; ++flat) {
+        double center[kStateDim];
+        state_grid.center(static_cast<StateIndex>(flat), center);
+        constraint_mask[flat] = satisfies_state_constraint(cfg, center) ? 1 : 0;
+    }
+    
+    // 构建前缀和
+    auto prefix_constraint = build_prefix_sum_cpu(state_grid, constraint_mask);
+    auto prefix_valid = build_prefix_sum_cpu(state_grid, valid_mask);
 
     for (std::uint64_t state = 0; state < state_grid.total_size; ++state) {
         double x[kStateDim];
@@ -194,9 +208,17 @@ inline PairAbstraction<StateIndex> build_abstraction_cpu(const Grid4D<StateIndex
                 continue;  // 后继盒越界
             }
 
-            // 检查后继盒内所有状态是否都满足状态约束
-            if (!box_satisfies_constraint(state_grid, box, cfg)) {
-                continue;  // 有后继状态不满足约束，跳过这个 (x,u) 对
+            // 使用前缀和快速检查后继盒内所有状态是否都满足约束
+            // 算法：计算盒内满足约束的状态数和有效状态数，两者相等则所有有效状态都满足约束
+            const PrefixCount constraint_count = query_box_count(state_grid, prefix_constraint,
+                                                                 state_grid.flatten(box.min),
+                                                                 state_grid.flatten(box.max));
+            const PrefixCount valid_count = query_box_count(state_grid, prefix_valid,
+                                                            state_grid.flatten(box.min),
+                                                            state_grid.flatten(box.max));
+            
+            if (constraint_count != valid_count) {
+                continue;  // 有有效状态不满足约束，跳过这个 (x,u) 对
             }
 
             abstraction.min_flat[pair] = state_grid.flatten(box.min);
@@ -254,15 +276,13 @@ inline PreparedCase<StateIndex> prepare_case_gpu_minimal(const CaseConfig& cfg) 
         prepared.model.disturbance_half_width[dim] = cfg.disturbance_half_width[dim];
     }
 
-    std::cout << "GPU-minimal: Building valid mask for " << prepared.state_grid.total_size << " states..." << std::endl;
-    prepared.valid_mask = build_valid_mask(prepared.state_grid, cfg);
+    // CPU 版本：构建 candidate mask（不涉及约束检查）
     std::cout << "GPU-minimal: Building candidate mask for " << prepared.state_grid.total_size << " states..." << std::endl;
     prepared.candidate_mask = build_candidate_mask(prepared.state_grid, cfg.candidate);
-    for (std::uint64_t i = 0; i < prepared.candidate_mask.size(); ++i) {
-        if (prepared.candidate_mask[i] && !prepared.valid_mask[i]) {
-            throw std::runtime_error("candidate set contains invalid states");
-        }
-    }
+    
+    // valid_mask 将在 GPU 上构建，这里只分配空间
+    std::cout << "GPU-minimal: Valid mask will be built on GPU" << std::endl;
+    prepared.valid_mask.assign(prepared.state_grid.total_size, 0);
 
     // 跳过 CPU 抽象计算 - GPU 将直接计算
     prepared.abstraction.pair_count = prepared.state_grid.total_size * prepared.input_grid.total_size;
@@ -297,7 +317,7 @@ inline PreparedCase<StateIndex> prepare_case_cpu(const CaseConfig& cfg) {
     auto t0 = std::chrono::steady_clock::now();
     std::cout << "CPU: Starting abstraction phase for " << prepared.state_grid.total_size << " states and "
               << prepared.input_grid.total_size << " inputs..." << std::endl;
-    prepared.abstraction = build_abstraction_cpu(prepared.state_grid, prepared.input_grid, prepared.model, cfg);
+    prepared.abstraction = build_abstraction_cpu(prepared.state_grid, prepared.input_grid, prepared.model, cfg, prepared.valid_mask);
     auto t1 = std::chrono::steady_clock::now();
     prepared.abstraction_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     std::cout << "CPU: Abstraction phase completed in " << prepared.abstraction_ms << " ms" << std::endl;
