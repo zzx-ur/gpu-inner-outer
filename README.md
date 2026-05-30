@@ -41,7 +41,11 @@ cmake --build build -j 8
 
 
 ## Results
+Note that the inner-outer set verification use 464.089 ms(this is already enough)
 
+the total memory 3.85 GiB including lots of useless data, copy to cpu using 3154.28 ms for visualization. 
+
+the useful data is controller using 15.3Mb. meaning that the total copy time is far less than 3154.28ms. 
 
 [gpu]
 states        : 4013100
