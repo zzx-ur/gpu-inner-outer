@@ -42,6 +42,7 @@ cmake --build build -j 8
 
 ## Results
 
+
 [gpu]
 states        : 4013100
 inputs        : 100
@@ -52,31 +53,31 @@ candidate ctl : 161280
 iterations    : 12
 converged     : true
 message       : all candidate states obtained a controller
-abstraction   : 659.878 ms
-solve         : 161.927 ms
+abstraction   : 302.719 ms
+solve         : 162.215 ms
 memory total  : 3.85 GiB
 
 [GPU Detailed Timing]
 === Abstraction Phase ===
-  Kernel execution      : 303.513 ms
-  H2D memcpy            : 33.9179 ms
-  Total abstraction     : 659.878 ms
+  Kernel execution      : 302.13 ms
+  H2D memcpy            : 417.273 ms
+  Total abstraction     : 302.719 ms
 
 === Reachability Iteration Phase ===
-  Prefix build (total)  : 2.12908 ms
-  Pair satisfaction     : 157.749 ms
-  Reduce inputs         : 1.79294 ms
-  Iteration memcpy      : 0.202461 ms
-  Total solve           : 161.927 ms
+  Prefix build (total)  : 2.11685 ms
+  Pair satisfaction     : 158.054 ms
+  Reduce inputs         : 1.78838 ms
+  Iteration memcpy      : 0.197654 ms
+  Total solve           : 162.215 ms
 
 === Result Copy Phase ===
-  D2H memcpy            : 2518.45 ms
+  D2H memcpy            : 3154.28 ms
 
 === Summary ===
-  Total kernel time     : 465.184 ms
-  Total memcpy time     : 2552.57 ms
-  Total compute time    : 3017.75 ms
-  Total elapsed time    : 821.805 ms
+  Total kernel time     : 464.089 ms
+  Total memcpy time     : 3571.75 ms
+  Total compute time    : 4035.84 ms
+  Total elapsed time    : 464.934 ms
 
 === GPU Memory Usage ===
   Abstraction data      : 3.36 GiB
@@ -86,14 +87,14 @@ memory total  : 3.85 GiB
   Peak usage            : 4.40 GiB
 
 === Per-Iteration Breakdown (first 5 and last 5) ===
-  Iter 1: 13.7472 ms total [prefix: 0.186085 ms, satisfaction: 13.2635 ms, reduction: 0.297175 ms] -> 52481 new reachable, 123510 new certified
-  Iter 2: 13.4816 ms total [prefix: 0.176967 ms, satisfaction: 13.0918 ms, reduction: 0.212544 ms] -> 57431 new reachable, 1097 new certified
-  Iter 3: 13.4655 ms total [prefix: 0.177258 ms, satisfaction: 13.0794 ms, reduction: 0.208562 ms] -> 91549 new reachable, 1502 new certified
-  Iter 4: 13.4447 ms total [prefix: 0.176069 ms, satisfaction: 13.0673 ms, reduction: 0.201031 ms] -> 122322 new reachable, 1501 new certified
-  Iter 5: 13.4387 ms total [prefix: 0.181446 ms, satisfaction: 13.0658 ms, reduction: 0.191201 ms] -> 129730 new reachable, 1459 new certified
+  Iter 1: 13.6951 ms total [prefix: 0.186744 ms, satisfaction: 13.219 ms, reduction: 0.289034 ms] -> 52481 new reachable, 123510 new certified
+  Iter 2: 13.4331 ms total [prefix: 0.178956 ms, satisfaction: 13.0425 ms, reduction: 0.211376 ms] -> 57431 new reachable, 1097 new certified
+  Iter 3: 13.4373 ms total [prefix: 0.173077 ms, satisfaction: 13.0563 ms, reduction: 0.207675 ms] -> 91549 new reachable, 1502 new certified
+  Iter 4: 13.442 ms total [prefix: 0.178789 ms, satisfaction: 13.0624 ms, reduction: 0.200532 ms] -> 122322 new reachable, 1501 new certified
+  Iter 5: 13.4261 ms total [prefix: 0.176208 ms, satisfaction: 13.0597 ms, reduction: 0.189876 ms] -> 129730 new reachable, 1459 new certified
   ...
-  Iter 8: 13.4589 ms total [prefix: 0.175872 ms, satisfaction: 13.1343 ms, reduction: 0.148526 ms] -> 144731 new reachable, 5579 new certified
-  Iter 9: 13.4796 ms total [prefix: 0.175129 ms, satisfaction: 13.1767 ms, reduction: 0.127445 ms] -> 144977 new reachable, 7315 new certified
-  Iter 10: 13.4876 ms total [prefix: 0.176515 ms, satisfaction: 13.2029 ms, reduction: 0.107891 ms] -> 140279 new reachable, 7976 new certified
-  Iter 11: 13.4754 ms total [prefix: 0.17393 ms, satisfaction: 13.2126 ms, reduction: 0.088614 ms] -> 122784 new reachable, 3939 new certified
-  Iter 12: 13.4983 ms total [prefix: 0.176201 ms, satisfaction: 13.2503 ms, reduction: 0.071592 ms] -> 54686 new reachable, 128 new certified
+  Iter 8: 13.4862 ms total [prefix: 0.177702 ms, satisfaction: 13.1612 ms, reduction: 0.147102 ms] -> 144731 new reachable, 5579 new certified
+  Iter 9: 13.548 ms total [prefix: 0.176857 ms, satisfaction: 13.2434 ms, reduction: 0.127501 ms] -> 144977 new reachable, 7315 new certified
+  Iter 10: 13.6024 ms total [prefix: 0.171175 ms, satisfaction: 13.3229 ms, reduction: 0.108103 ms] -> 140279 new reachable, 7976 new certified
+  Iter 11: 13.6245 ms total [prefix: 0.176303 ms, satisfaction: 13.3598 ms, reduction: 0.088223 ms] -> 122784 new reachable, 3939 new certified
+  Iter 12: 13.644 ms total [prefix: 0.172261 ms, satisfaction: 13.399 ms, reduction: 0.072498 ms] -> 54686 new reachable, 128 new certified
