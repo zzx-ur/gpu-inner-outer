@@ -96,6 +96,56 @@ __device__ bool d_point_in_rect(const double lb[kStateDim], const double ub[kSta
     return true;
 }
 
+// 设备端：将连续坐标矩形转换为离散索引盒
+// 优化版本：直接计算矩形内所有状态的索引范围，避免逐点检查
+__device__ bool d_continuous_rect_to_index_box(const Grid4D<std::uint32_t>& grid,
+                                               const double rect_lb[kStateDim],
+                                               const double rect_ub[kStateDim],
+                                               IndexBox4D* out) {
+    constexpr double kEps = 1e-9;
+    out->valid = false;
+
+    // 对于非环绕维度，检查矩形是否在网格范围内
+    for (int dim = 0; dim < kStateDim; ++dim) {
+        if (dim == grid.wrap_dim) {
+            continue;
+        }
+        if (rect_lb[dim] < grid.lb[dim] - kEps || rect_ub[dim] > grid.ub[dim] + kEps) {
+            return false;
+        }
+    }
+
+    // 计算每个维度的索引范围
+    for (int dim = 0; dim < kStateDim; ++dim) {
+        if (dim == grid.wrap_dim) {
+            // 环绕维度：始终覆盖整个范围
+            out->min[dim] = 0;
+            out->max[dim] = grid.shape[dim] - 1;
+            continue;
+        }
+
+        // 非环绕维度：计算索引范围
+        auto lower = static_cast<std::int64_t>(std::floor((rect_lb[dim] - grid.lb[dim]) / grid.eta[dim]));
+        auto upper = static_cast<std::int64_t>(std::ceil((rect_ub[dim] - grid.lb[dim]) / grid.eta[dim])) - 1;
+        
+        // 边界检查
+        if (lower < 0) lower = 0;
+        if (upper < 0) upper = 0;
+        if (lower >= static_cast<std::int64_t>(grid.shape[dim])) {
+            lower = static_cast<std::int64_t>(grid.shape[dim]) - 1;
+        }
+        if (upper >= static_cast<std::int64_t>(grid.shape[dim])) {
+            upper = static_cast<std::int64_t>(grid.shape[dim]) - 1;
+        }
+        
+        out->min[dim] = static_cast<std::uint32_t>(lower);
+        out->max[dim] = static_cast<std::uint32_t>(upper);
+    }
+
+    out->valid = true;
+    return true;
+}
+
 // 前向声明
 __device__ PrefixCount d_query_box_count(const Grid4D<std::uint32_t>& grid,
                                          const PrefixLayout4D& layout,
@@ -230,6 +280,24 @@ __global__ void build_constraint_mask_kernel(const Grid4D<std::uint32_t> state_g
     double center[kStateDim];
     state_grid.center(static_cast<std::uint32_t>(flat), center);
     constraint_mask[flat] = d_satisfies_constraint(center, constraint_params) ? 1 : 0;
+}
+
+// GPU kernel：构建 candidate_mask（检查状态中心是否在矩形区域内）
+// 优化版本：直接在 GPU 端计算，避免 CPU 端逐点遍历和 H2D 传输
+__global__ void build_candidate_mask_kernel(const Grid4D<std::uint32_t> state_grid,
+                                           const GpuMapParams candidate_params,
+                                           std::uint8_t* candidate_mask) {
+    const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (flat >= state_grid.total_size) {
+        return;
+    }
+
+    double center[kStateDim];
+    state_grid.center(static_cast<std::uint32_t>(flat), center);
+    
+    // 检查状态中心是否在候选矩形区域内
+    bool in_candidate = d_point_in_rect(candidate_params.map_lb, candidate_params.map_ub, center);
+    candidate_mask[flat] = in_candidate ? 1 : 0;
 }
 
 // GPU kernel：构建 valid_mask（仅包含 map 和约束检查，无障碍物）
@@ -666,9 +734,24 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
             map_params.map_ub[dim] = cfg.map.ub[dim];
         }
         
+        // 构建 GPU candidate 参数
+        GpuMapParams candidate_params;
+        for (int dim = 0; dim < kStateDim; ++dim) {
+            candidate_params.map_lb[dim] = cfg.candidate.lb[dim];
+            candidate_params.map_ub[dim] = cfg.candidate.ub[dim];
+        }
+        
+        // 优化：在 GPU 上构建 candidate_mask（避免 CPU 端逐点遍历和 H2D 传输）
+        std::cout << "GPU: Building candidate mask on device..." << std::endl;
+        const auto state_blocks = ceil_div_to_u32(state_count, threads);
+        build_candidate_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
+                                                               candidate_params,
+                                                               d_candidate_mask);
+        GSC_CUDA_CHECK(cudaGetLastError());
+        GSC_CUDA_CHECK(cudaDeviceSynchronize());
+        
         // 在 GPU 上构建 valid_mask（无障碍物检查）
         std::cout << "GPU: Building valid mask on device..." << std::endl;
-        const auto state_blocks = ceil_div_to_u32(state_count, threads);
         
         // 使用专用的双曲线约束 kernel 以获得更好的性能
         if (constraint_params.constraint_type == 1) {  // kHyperbolic
@@ -688,26 +771,12 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
         GSC_CUDA_CHECK(cudaGetLastError());
         GSC_CUDA_CHECK(cudaDeviceSynchronize());
         
-        // 复制 candidate_mask 到 GPU
-        GSC_CUDA_CHECK(cudaMemcpy(d_candidate_mask,
-                                  prepared.candidate_mask.data(),
-                                  state_count * sizeof(std::uint8_t),
-                                  cudaMemcpyHostToDevice));
-
-        // 计算候选状态数
-        std::uint64_t candidate_count = 0;
-        for (std::uint64_t i = 0; i < state_count; ++i) {
-            if (prepared.candidate_mask[i]) {
-                ++candidate_count;
-            }
-        }
-
         // 优化：直接在 GPU 端初始化，避免 H2D 传输
-        // 1. 复制 candidate_mask 到 d_reachable_prev（初始可达状态 = 候选状态）
+        // 1. 直接使用 d_candidate_mask 初始化 d_reachable_prev（初始可达状态 = 候选状态）
         GSC_CUDA_CHECK(cudaMemcpy(d_reachable_prev,
-                                  prepared.candidate_mask.data(),
+                                  d_candidate_mask,
                                   state_count * sizeof(std::uint8_t),
-                                  cudaMemcpyHostToDevice));
+                                  cudaMemcpyDeviceToDevice));
         
         // 2. 使用 cudaMemset 初始化 d_controller 为 kInvalidInput（0xFF）
         GSC_CUDA_CHECK(cudaMemset(d_controller, 
@@ -720,12 +789,24 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
                                   state_count * sizeof(ReachStep)));
         
         // 4. 使用 GPU kernel 初始化候选状态的 reach_step 为 0
-        const auto init_blocks = ceil_div_to_u32(state_count, threads);
-        init_candidate_reach_step_kernel<<<init_blocks, threads>>>(d_candidate_mask,
-                                                                   d_reach_step,
-                                                                   state_count);
+        init_candidate_reach_step_kernel<<<state_blocks, threads>>>(d_candidate_mask,
+                                                                    d_reach_step,
+                                                                    state_count);
         GSC_CUDA_CHECK(cudaGetLastError());
         GSC_CUDA_CHECK(cudaDeviceSynchronize());
+        
+        // 5. 计算候选状态数（从 GPU 复制 candidate_mask 到 CPU 进行计数）
+        std::vector<std::uint8_t> h_candidate_mask(state_count);
+        GSC_CUDA_CHECK(cudaMemcpy(h_candidate_mask.data(),
+                                  d_candidate_mask,
+                                  state_count * sizeof(std::uint8_t),
+                                  cudaMemcpyDeviceToHost));
+        std::uint64_t candidate_count = 0;
+        for (std::uint64_t i = 0; i < state_count; ++i) {
+            if (h_candidate_mask[i]) {
+                ++candidate_count;
+            }
+        }
         
         auto init_memcpy_stop = std::chrono::steady_clock::now();
         report.kernel_timings.abstraction_memcpy_h2d_ms = 

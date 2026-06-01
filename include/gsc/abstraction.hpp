@@ -121,9 +121,9 @@ inline PreparedCase<StateIndex> prepare_case_gpu_minimal(const CaseConfig& cfg) 
         prepared.model.disturbance_half_width[dim] = cfg.disturbance_half_width[dim];
     }
 
-    // 构建 candidate mask（CPU 端，最小化传输）
-    std::cout << "GPU-minimal: Building candidate mask for " << prepared.state_grid.total_size << " states..." << std::endl;
-    prepared.candidate_mask = build_candidate_mask(prepared.state_grid, cfg.candidate);
+    // 优化：candidate_mask 将在 GPU 上构建，这里只分配空间
+    std::cout << "GPU-minimal: Candidate mask will be built on GPU for " << prepared.state_grid.total_size << " states..." << std::endl;
+    prepared.candidate_mask.assign(prepared.state_grid.total_size, 0);
     
     // valid_mask 将在 GPU 上构建，这里只分配空间
     std::cout << "GPU-minimal: Valid mask will be built on GPU" << std::endl;
