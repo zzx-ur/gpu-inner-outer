@@ -51,6 +51,7 @@ struct CaseConfig {
 
     HyperRect4D candidate{};
     HyperRect4D map{};
+    std::vector<HyperRect4D> obstacles;
 
     // 状态约束配置
     ConstraintType constraint_type = ConstraintType::kNone;
