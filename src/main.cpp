@@ -42,7 +42,7 @@ void print_gpu_detailed_timing(const gsc::GpuRunReport& gpu) {
     std::cout << "\n[GPU Detailed Timing]\n";
     std::cout << "=== Abstraction Phase ===\n";
     std::cout << "  Kernel execution      : " << gpu.kernel_timings.abstraction_kernel_ms << " ms\n";
-    std::cout << "  H2D memcpy            : " << gpu.kernel_timings.abstraction_memcpy_h2d_ms << " ms\n";
+    std::cout << "  GPU init (masks+count): " << gpu.kernel_timings.abstraction_memcpy_h2d_ms << " ms\n";
     std::cout << "  Total abstraction     : " << gpu.abstraction_ms << " ms\n";
     
     std::cout << "\n=== Reachability Iteration Phase ===\n";

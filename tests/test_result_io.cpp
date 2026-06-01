@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "gsc/result_io.hpp"
+#include "gsc/cuda_api.hpp"
 
 #if GSC_HAS_HDF5
 #include <hdf5.h>

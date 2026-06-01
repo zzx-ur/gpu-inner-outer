@@ -485,6 +485,50 @@ __global__ void init_candidate_reach_step_kernel(const std::uint8_t* candidate_m
     }
 }
 
+// GPU kernel：使用 warp-level reduction 统计 candidate_mask 中非零元素的数量
+// 每个 block 计算部分和，然后使用 atomicAdd 累加到全局计数器
+__global__ void count_candidates_kernel(const std::uint8_t* candidate_mask,
+                                        std::uint64_t state_count,
+                                        unsigned long long* total_count) {
+    __shared__ unsigned int shared_count[32];  // 每个 warp 一个计数器
+    
+    const std::uint64_t tid = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const unsigned int lane = threadIdx.x % 32;
+    const unsigned int warp_id = threadIdx.x / 32;
+    
+    // 每个线程统计自己负责的元素
+    unsigned int local_count = 0;
+    if (tid < state_count) {
+        local_count = candidate_mask[tid] ? 1 : 0;
+    }
+    
+    // Warp-level reduction using shuffle
+    for (int offset = 16; offset > 0; offset /= 2) {
+        local_count += __shfl_down_sync(0xffffffff, local_count, offset);
+    }
+    
+    // Lane 0 of each warp writes to shared memory
+    if (lane == 0) {
+        shared_count[warp_id] = local_count;
+    }
+    __syncthreads();
+    
+    // First warp reduces the shared memory values
+    if (warp_id == 0) {
+        const unsigned int num_warps = (blockDim.x + 31) / 32;
+        local_count = (lane < num_warps) ? shared_count[lane] : 0;
+        
+        for (int offset = 16; offset > 0; offset /= 2) {
+            local_count += __shfl_down_sync(0xffffffff, local_count, offset);
+        }
+        
+        // Thread 0 atomically adds to global counter
+        if (lane == 0) {
+            atomicAdd(total_count, static_cast<unsigned long long>(local_count));
+        }
+    }
+}
+
 __global__ void reduce_inputs_kernel(const std::uint8_t* valid_state_mask,
                                      const std::uint8_t* candidate_mask,
                                      const std::uint8_t* reachable_prev,
@@ -715,8 +759,8 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
 
         record_memory_stats(report.memory_stats, "after allocation");
 
-        // 测量初始化阶段的memcpy
-        auto init_memcpy_start = std::chrono::steady_clock::now();
+        // 测量 GPU 初始化阶段耗时
+        auto init_start = std::chrono::steady_clock::now();
         
         // 构建 GPU 约束参数
         GpuConstraintParams constraint_params;
@@ -741,16 +785,15 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
             candidate_params.map_ub[dim] = cfg.candidate.ub[dim];
         }
         
-        // 优化：在 GPU 上构建 candidate_mask（避免 CPU 端逐点遍历和 H2D 传输）
+        // 纯 GPU 端初始化：在 GPU 上构建 candidate_mask
         std::cout << "GPU: Building candidate mask on device..." << std::endl;
         const auto state_blocks = ceil_div_to_u32(state_count, threads);
         build_candidate_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
                                                                candidate_params,
                                                                d_candidate_mask);
         GSC_CUDA_CHECK(cudaGetLastError());
-        GSC_CUDA_CHECK(cudaDeviceSynchronize());
         
-        // 在 GPU 上构建 valid_mask（无障碍物检查）
+        // 纯 GPU 端初始化：在 GPU 上构建 valid_mask（无障碍物检查）
         std::cout << "GPU: Building valid mask on device..." << std::endl;
         
         // 使用专用的双曲线约束 kernel 以获得更好的性能
@@ -769,48 +812,49 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
                                                                d_valid_mask);
         }
         GSC_CUDA_CHECK(cudaGetLastError());
-        GSC_CUDA_CHECK(cudaDeviceSynchronize());
         
-        // 优化：直接在 GPU 端初始化，避免 H2D 传输
-        // 1. 直接使用 d_candidate_mask 初始化 d_reachable_prev（初始可达状态 = 候选状态）
+        // 纯 GPU 端初始化：直接使用 d_candidate_mask 初始化 d_reachable_prev（D2D 拷贝）
         GSC_CUDA_CHECK(cudaMemcpy(d_reachable_prev,
                                   d_candidate_mask,
                                   state_count * sizeof(std::uint8_t),
                                   cudaMemcpyDeviceToDevice));
         
-        // 2. 使用 cudaMemset 初始化 d_controller 为 kInvalidInput（0xFF）
+        // 纯 GPU 端初始化：使用 cudaMemset 初始化 d_controller 为 kInvalidInput（0xFF）
         GSC_CUDA_CHECK(cudaMemset(d_controller, 
                                   static_cast<int>(kInvalidInput), 
                                   state_count * sizeof(InputIndex)));
         
-        // 3. 使用 cudaMemset 初始化 d_reach_step 为 kUnreachableStep（0xFF）
+        // 纯 GPU 端初始化：使用 cudaMemset 初始化 d_reach_step 为 kUnreachableStep（0xFF）
         GSC_CUDA_CHECK(cudaMemset(d_reach_step, 
                                   static_cast<int>(kUnreachableStep), 
                                   state_count * sizeof(ReachStep)));
         
-        // 4. 使用 GPU kernel 初始化候选状态的 reach_step 为 0
+        // 纯 GPU 端初始化：使用 GPU kernel 初始化候选状态的 reach_step 为 0
         init_candidate_reach_step_kernel<<<state_blocks, threads>>>(d_candidate_mask,
                                                                     d_reach_step,
                                                                     state_count);
         GSC_CUDA_CHECK(cudaGetLastError());
+        
+        // 纯 GPU 端统计：使用 GPU reduction 计算候选状态数（避免 D2H 拷贝）
+        // 复用已分配的 d_new_reachable 作为临时计数器
+        GSC_CUDA_CHECK(cudaMemset(d_new_reachable, 0, sizeof(unsigned long long)));
+        count_candidates_kernel<<<state_blocks, threads>>>(d_candidate_mask,
+                                                           state_count,
+                                                           d_new_reachable);
+        GSC_CUDA_CHECK(cudaGetLastError());
         GSC_CUDA_CHECK(cudaDeviceSynchronize());
         
-        // 5. 计算候选状态数（从 GPU 复制 candidate_mask 到 CPU 进行计数）
-        std::vector<std::uint8_t> h_candidate_mask(state_count);
-        GSC_CUDA_CHECK(cudaMemcpy(h_candidate_mask.data(),
-                                  d_candidate_mask,
-                                  state_count * sizeof(std::uint8_t),
+        // 仅拷贝单个 8 字节计数值（而非整个 candidate_mask 数组）
+        unsigned long long h_candidate_count = 0;
+        GSC_CUDA_CHECK(cudaMemcpy(&h_candidate_count,
+                                  d_new_reachable,
+                                  sizeof(unsigned long long),
                                   cudaMemcpyDeviceToHost));
-        std::uint64_t candidate_count = 0;
-        for (std::uint64_t i = 0; i < state_count; ++i) {
-            if (h_candidate_mask[i]) {
-                ++candidate_count;
-            }
-        }
+        const std::uint64_t candidate_count = static_cast<std::uint64_t>(h_candidate_count);
         
-        auto init_memcpy_stop = std::chrono::steady_clock::now();
+        auto init_stop = std::chrono::steady_clock::now();
         report.kernel_timings.abstraction_memcpy_h2d_ms = 
-            std::chrono::duration<double, std::milli>(init_memcpy_stop - init_memcpy_start).count();
+            std::chrono::duration<double, std::milli>(init_stop - init_start).count();
 
         // 创建CUDA Events用于kernel级别计时
         cudaEvent_t event_start, event_stop;
