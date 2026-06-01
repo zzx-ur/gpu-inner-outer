@@ -16,7 +16,7 @@ cmake -S . -B build
 cmake --build build -j 8
 
 # Run
-./build/cuda_symbolic_control_cli examples/hyperbolic_case.cfg --gpu
+./build/cuda_symbolic_control_cli examples/hyperbolic_case.cfg 
 ```
 
 ## Documentation
@@ -47,58 +47,44 @@ the total memory 3.85 GiB including lots of useless data, copy to cpu using 3154
 
 the useful data is controller using 15.3Mb. meaning that the total copy time is far less than 3154.28ms. 
 
-[gpu]
-states        : 4013100
-inputs        : 100
-pairs         : 401310000
-reachable     : 1487115
-candidate     : 161280
-candidate ctl : 161280
-iterations    : 12
-converged     : true
-message       : all candidate states obtained a controller
-abstraction   : 302.719 ms
-solve         : 162.215 ms
-memory total  : 3.85 GiB
-
 [GPU Detailed Timing]
 === Abstraction Phase ===
-  Kernel execution      : 302.13 ms
-  H2D memcpy            : 417.273 ms
-  Total abstraction     : 302.719 ms
+  Kernel execution      : 295.44 ms
+  GPU init (masks+count): 456.922 ms
+  Total abstraction     : 752.935 ms
 
 === Reachability Iteration Phase ===
-  Prefix build (total)  : 2.11685 ms
-  Pair satisfaction     : 158.054 ms
-  Reduce inputs         : 1.78838 ms
-  Iteration memcpy      : 0.197654 ms
-  Total solve           : 162.215 ms
+  Prefix build (total)  : 2.15574 ms
+  Pair satisfaction     : 151.56 ms
+  Reduce inputs         : 1.83759 ms
+  Iteration memcpy      : 0.180344 ms
+  Total solve           : 155.819 ms
 
 === Result Copy Phase ===
-  D2H memcpy            : 3154.28 ms
+  D2H memcpy            : 4699.66 ms
 
 === Summary ===
-  Total kernel time     : 464.089 ms
-  Total memcpy time     : 3571.75 ms
-  Total compute time    : 4035.84 ms
-  Total elapsed time    : 464.934 ms
+  Total kernel time     : 450.994 ms
+  Total memcpy time     : 5156.76 ms
+  Total compute time    : 5607.76 ms
+  Total elapsed time    : 908.753 ms
 
 === GPU Memory Usage ===
   Abstraction data      : 3.36 GiB
   Prefix sum data       : 103.38 MiB
   Iteration data        : 49.75 MiB
   Total allocated       : 3.51 GiB
-  Peak usage            : 4.40 GiB
+  Peak usage            : 4.39 GiB
 
 === Per-Iteration Breakdown (first 5 and last 5) ===
-  Iter 1: 13.6951 ms total [prefix: 0.186744 ms, satisfaction: 13.219 ms, reduction: 0.289034 ms] -> 52481 new reachable, 123510 new certified
-  Iter 2: 13.4331 ms total [prefix: 0.178956 ms, satisfaction: 13.0425 ms, reduction: 0.211376 ms] -> 57431 new reachable, 1097 new certified
-  Iter 3: 13.4373 ms total [prefix: 0.173077 ms, satisfaction: 13.0563 ms, reduction: 0.207675 ms] -> 91549 new reachable, 1502 new certified
-  Iter 4: 13.442 ms total [prefix: 0.178789 ms, satisfaction: 13.0624 ms, reduction: 0.200532 ms] -> 122322 new reachable, 1501 new certified
-  Iter 5: 13.4261 ms total [prefix: 0.176208 ms, satisfaction: 13.0597 ms, reduction: 0.189876 ms] -> 129730 new reachable, 1459 new certified
+  Iter 1: 13.1312 ms total [prefix: 0.182252 ms, satisfaction: 12.704 ms, reduction: 0.244654 ms] -> 52481 new reachable, 123510 new certified
+  Iter 2: 13.0081 ms total [prefix: 0.17967 ms, satisfaction: 12.6139 ms, reduction: 0.214323 ms] -> 57431 new reachable, 1097 new certified
+  Iter 3: 12.9968 ms total [prefix: 0.177524 ms, satisfaction: 12.6098 ms, reduction: 0.20928 ms] -> 91549 new reachable, 1502 new certified
+  Iter 4: 12.9834 ms total [prefix: 0.177131 ms, satisfaction: 12.6011 ms, reduction: 0.204947 ms] -> 122322 new reachable, 1501 new certified
+  Iter 5: 13.0044 ms total [prefix: 0.185322 ms, satisfaction: 12.627 ms, reduction: 0.191833 ms] -> 129730 new reachable, 1459 new certified
   ...
-  Iter 8: 13.4862 ms total [prefix: 0.177702 ms, satisfaction: 13.1612 ms, reduction: 0.147102 ms] -> 144731 new reachable, 5579 new certified
-  Iter 9: 13.548 ms total [prefix: 0.176857 ms, satisfaction: 13.2434 ms, reduction: 0.127501 ms] -> 144977 new reachable, 7315 new certified
-  Iter 10: 13.6024 ms total [prefix: 0.171175 ms, satisfaction: 13.3229 ms, reduction: 0.108103 ms] -> 140279 new reachable, 7976 new certified
-  Iter 11: 13.6245 ms total [prefix: 0.176303 ms, satisfaction: 13.3598 ms, reduction: 0.088223 ms] -> 122784 new reachable, 3939 new certified
-  Iter 12: 13.644 ms total [prefix: 0.172261 ms, satisfaction: 13.399 ms, reduction: 0.072498 ms] -> 54686 new reachable, 128 new certified
+  Iter 8: 12.9584 ms total [prefix: 0.178506 ms, satisfaction: 12.6304 ms, reduction: 0.149283 ms] -> 144731 new reachable, 5579 new certified
+  Iter 9: 12.9458 ms total [prefix: 0.179855 ms, satisfaction: 12.6337 ms, reduction: 0.131999 ms] -> 144977 new reachable, 7315 new certified
+  Iter 10: 12.9168 ms total [prefix: 0.175607 ms, satisfaction: 12.6298 ms, reduction: 0.111225 ms] -> 140279 new reachable, 7976 new certified
+  Iter 11: 12.8985 ms total [prefix: 0.180316 ms, satisfaction: 12.6268 ms, reduction: 0.091101 ms] -> 122784 new reachable, 3939 new certified
+  Iter 12: 12.9298 ms total [prefix: 0.184381 ms, satisfaction: 12.6236 ms, reduction: 0.12129 ms] -> 54686 new reachable, 128 new certified
