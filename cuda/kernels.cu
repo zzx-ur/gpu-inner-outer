@@ -529,6 +529,157 @@ __global__ void count_candidates_kernel(const std::uint8_t* candidate_mask,
     }
 }
 
+// ============================================================================
+// 融合初始化 Kernel：将多个独立初始化操作合并为单个 kernel
+// ============================================================================
+// 优化效果：
+// - 减少 kernel launch 开销（从 4 次 kernel + 2 次 memset + 1 次 D2D 拷贝 -> 1 次 kernel）
+// - 减少全局内存访问（state_grid.center 只计算一次，结果复用）
+// - 利用 GPU 并行性同时完成所有初始化任务
+// ============================================================================
+__global__ void fused_init_kernel(const Grid4D<std::uint32_t> state_grid,
+                                  const GpuMapParams map_params,
+                                  const GpuMapParams candidate_params,
+                                  const GpuConstraintParams constraint_params,
+                                  std::uint8_t* valid_mask,
+                                  std::uint8_t* candidate_mask,
+                                  std::uint8_t* reachable_prev,
+                                  InputIndex* controller,
+                                  ReachStep* reach_step,
+                                  unsigned long long* candidate_count) {
+    __shared__ unsigned int shared_count[32];  // 用于 warp-level reduction
+    
+    const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const unsigned int lane = threadIdx.x % 32;
+    const unsigned int warp_id = threadIdx.x / 32;
+    
+    // 每个线程的局部候选计数
+    unsigned int local_candidate = 0;
+    
+    if (flat < state_grid.total_size) {
+        // 1. 计算状态中心坐标（只计算一次，结果复用）
+        double center[kStateDim];
+        state_grid.center(static_cast<std::uint32_t>(flat), center);
+        
+        // 2. 检查是否在 candidate 区域内
+        const bool is_candidate = d_point_in_rect(candidate_params.map_lb, 
+                                                   candidate_params.map_ub, 
+                                                   center);
+        
+        // 3. 检查是否在 map 内且满足约束
+        bool is_valid = d_point_in_rect(map_params.map_lb, map_params.map_ub, center);
+        if (is_valid) {
+            is_valid = d_satisfies_constraint(center, constraint_params);
+        }
+        
+        // 4. 写入所有输出数组（合并写入，提高内存效率）
+        const std::uint8_t candidate_val = is_candidate ? 1 : 0;
+        candidate_mask[flat] = candidate_val;
+        valid_mask[flat] = is_valid ? 1 : 0;
+        reachable_prev[flat] = candidate_val;  // 初始可达 = 候选
+        controller[flat] = kInvalidInput;       // 0xFF
+        reach_step[flat] = is_candidate ? 0 : kUnreachableStep;  // 候选为0，其他为0xFF
+        
+        // 5. 统计候选数量
+        local_candidate = candidate_val;
+    }
+    
+    // ========== Warp-level reduction 统计候选总数 ==========
+    for (int offset = 16; offset > 0; offset /= 2) {
+        local_candidate += __shfl_down_sync(0xffffffff, local_candidate, offset);
+    }
+    
+    if (lane == 0) {
+        shared_count[warp_id] = local_candidate;
+    }
+    __syncthreads();
+    
+    if (warp_id == 0) {
+        const unsigned int num_warps = (blockDim.x + 31) / 32;
+        local_candidate = (lane < num_warps) ? shared_count[lane] : 0;
+        
+        for (int offset = 16; offset > 0; offset /= 2) {
+            local_candidate += __shfl_down_sync(0xffffffff, local_candidate, offset);
+        }
+        
+        if (lane == 0) {
+            atomicAdd(candidate_count, static_cast<unsigned long long>(local_candidate));
+        }
+    }
+}
+
+// 针对双曲线约束优化的融合初始化 Kernel
+__global__ void fused_init_hyperbolic_kernel(const Grid4D<std::uint32_t> state_grid,
+                                              const GpuMapParams map_params,
+                                              const GpuMapParams candidate_params,
+                                              double hyperbolic_a,
+                                              double hyperbolic_b,
+                                              double hyperbolic_c,
+                                              std::uint8_t* valid_mask,
+                                              std::uint8_t* candidate_mask,
+                                              std::uint8_t* reachable_prev,
+                                              InputIndex* controller,
+                                              ReachStep* reach_step,
+                                              unsigned long long* candidate_count) {
+    __shared__ unsigned int shared_count[32];
+    
+    const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const unsigned int lane = threadIdx.x % 32;
+    const unsigned int warp_id = threadIdx.x / 32;
+    
+    unsigned int local_candidate = 0;
+    
+    if (flat < state_grid.total_size) {
+        double center[kStateDim];
+        state_grid.center(static_cast<std::uint32_t>(flat), center);
+        
+        const bool is_candidate = d_point_in_rect(candidate_params.map_lb, 
+                                                   candidate_params.map_ub, 
+                                                   center);
+        
+        // 内联双曲线约束检查（避免函数调用开销）
+        bool is_valid = d_point_in_rect(map_params.map_lb, map_params.map_ub, center);
+        if (is_valid) {
+            const double x1_sq = center[0] * center[0];
+            const double x2_sq = center[1] * center[1];
+            is_valid = (x1_sq - x2_sq <= hyperbolic_a) && 
+                       (hyperbolic_b * x2_sq - x1_sq <= hyperbolic_c);
+        }
+        
+        const std::uint8_t candidate_val = is_candidate ? 1 : 0;
+        candidate_mask[flat] = candidate_val;
+        valid_mask[flat] = is_valid ? 1 : 0;
+        reachable_prev[flat] = candidate_val;
+        controller[flat] = kInvalidInput;
+        reach_step[flat] = is_candidate ? 0 : kUnreachableStep;
+        
+        local_candidate = candidate_val;
+    }
+    
+    // Warp-level reduction
+    for (int offset = 16; offset > 0; offset /= 2) {
+        local_candidate += __shfl_down_sync(0xffffffff, local_candidate, offset);
+    }
+    
+    if (lane == 0) {
+        shared_count[warp_id] = local_candidate;
+    }
+    __syncthreads();
+    
+    if (warp_id == 0) {
+        const unsigned int num_warps = (blockDim.x + 31) / 32;
+        local_candidate = (lane < num_warps) ? shared_count[lane] : 0;
+        
+        for (int offset = 16; offset > 0; offset /= 2) {
+            local_candidate += __shfl_down_sync(0xffffffff, local_candidate, offset);
+        }
+        
+        if (lane == 0) {
+            atomicAdd(candidate_count, static_cast<unsigned long long>(local_candidate));
+        }
+    }
+}
+
 __global__ void reduce_inputs_kernel(const std::uint8_t* valid_state_mask,
                                      const std::uint8_t* candidate_mask,
                                      const std::uint8_t* reachable_prev,
@@ -785,66 +936,50 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
             candidate_params.map_ub[dim] = cfg.candidate.ub[dim];
         }
         
-        // 纯 GPU 端初始化：在 GPU 上构建 candidate_mask
-        std::cout << "GPU: Building candidate mask on device..." << std::endl;
+        // ========== 融合初始化：单个 kernel 完成所有初始化任务 ==========
+        // 优化效果：
+        // - 原来：4 次 kernel launch + 2 次 cudaMemset + 1 次 D2D 拷贝 + 1 次 cudaDeviceSynchronize
+        // - 现在：1 次 kernel launch + 1 次 cudaDeviceSynchronize
+        // - state_grid.center() 只计算一次，结果复用于所有检查
+        // - 所有输出数组在同一次遍历中写入，提高内存带宽利用率
+        std::cout << "GPU: Running fused initialization kernel..." << std::endl;
         const auto state_blocks = ceil_div_to_u32(state_count, threads);
-        build_candidate_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
-                                                               candidate_params,
-                                                               d_candidate_mask);
-        GSC_CUDA_CHECK(cudaGetLastError());
         
-        // 纯 GPU 端初始化：在 GPU 上构建 valid_mask（无障碍物检查）
-        std::cout << "GPU: Building valid mask on device..." << std::endl;
-        
-        // 使用专用的双曲线约束 kernel 以获得更好的性能
-        if (constraint_params.constraint_type == 1) {  // kHyperbolic
-            std::cout << "GPU: Using optimized hyperbolic constraint kernel..." << std::endl;
-            build_valid_mask_hyperbolic_kernel<<<state_blocks, threads>>>(prepared.state_grid,
-                                                                          map_params,
-                                                                          constraint_params.hyperbolic_a,
-                                                                          constraint_params.hyperbolic_b,
-                                                                          constraint_params.hyperbolic_c,
-                                                                          d_valid_mask);
-        } else {
-            build_valid_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
-                                                               map_params,
-                                                               constraint_params,
-                                                               d_valid_mask);
-        }
-        GSC_CUDA_CHECK(cudaGetLastError());
-        
-        // 纯 GPU 端初始化：直接使用 d_candidate_mask 初始化 d_reachable_prev（D2D 拷贝）
-        GSC_CUDA_CHECK(cudaMemcpy(d_reachable_prev,
-                                  d_candidate_mask,
-                                  state_count * sizeof(std::uint8_t),
-                                  cudaMemcpyDeviceToDevice));
-        
-        // 纯 GPU 端初始化：使用 cudaMemset 初始化 d_controller 为 kInvalidInput（0xFF）
-        GSC_CUDA_CHECK(cudaMemset(d_controller, 
-                                  static_cast<int>(kInvalidInput), 
-                                  state_count * sizeof(InputIndex)));
-        
-        // 纯 GPU 端初始化：使用 cudaMemset 初始化 d_reach_step 为 kUnreachableStep（0xFF）
-        GSC_CUDA_CHECK(cudaMemset(d_reach_step, 
-                                  static_cast<int>(kUnreachableStep), 
-                                  state_count * sizeof(ReachStep)));
-        
-        // 纯 GPU 端初始化：使用 GPU kernel 初始化候选状态的 reach_step 为 0
-        init_candidate_reach_step_kernel<<<state_blocks, threads>>>(d_candidate_mask,
-                                                                    d_reach_step,
-                                                                    state_count);
-        GSC_CUDA_CHECK(cudaGetLastError());
-        
-        // 纯 GPU 端统计：使用 GPU reduction 计算候选状态数（避免 D2H 拷贝）
-        // 复用已分配的 d_new_reachable 作为临时计数器
+        // 复用 d_new_reachable 作为候选计数器
         GSC_CUDA_CHECK(cudaMemset(d_new_reachable, 0, sizeof(unsigned long long)));
-        count_candidates_kernel<<<state_blocks, threads>>>(d_candidate_mask,
-                                                           state_count,
-                                                           d_new_reachable);
+        
+        if (constraint_params.constraint_type == 1) {  // kHyperbolic
+            std::cout << "GPU: Using optimized hyperbolic fused kernel..." << std::endl;
+            fused_init_hyperbolic_kernel<<<state_blocks, threads>>>(
+                prepared.state_grid,
+                map_params,
+                candidate_params,
+                constraint_params.hyperbolic_a,
+                constraint_params.hyperbolic_b,
+                constraint_params.hyperbolic_c,
+                d_valid_mask,
+                d_candidate_mask,
+                d_reachable_prev,
+                d_controller,
+                d_reach_step,
+                d_new_reachable);
+        } else {
+            fused_init_kernel<<<state_blocks, threads>>>(
+                prepared.state_grid,
+                map_params,
+                candidate_params,
+                constraint_params,
+                d_valid_mask,
+                d_candidate_mask,
+                d_reachable_prev,
+                d_controller,
+                d_reach_step,
+                d_new_reachable);
+        }
         GSC_CUDA_CHECK(cudaGetLastError());
         GSC_CUDA_CHECK(cudaDeviceSynchronize());
         
-        // 仅拷贝单个 8 字节计数值（而非整个 candidate_mask 数组）
+        // 仅拷贝单个 8 字节计数值
         unsigned long long h_candidate_count = 0;
         GSC_CUDA_CHECK(cudaMemcpy(&h_candidate_count,
                                   d_new_reachable,
