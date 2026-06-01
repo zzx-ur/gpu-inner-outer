@@ -404,6 +404,19 @@ __global__ void pair_satisfaction_kernel(Grid4D<std::uint32_t> state_grid,
     pair_satisfied[tid] = (reachable_count == valid_count) ? 1 : 0;
 }
 
+// GPU kernel：初始化候选状态的 reach_step 为 0
+__global__ void init_candidate_reach_step_kernel(const std::uint8_t* candidate_mask,
+                                                 ReachStep* reach_step,
+                                                 std::uint64_t state_count) {
+    const std::uint64_t state = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (state >= state_count) {
+        return;
+    }
+    if (candidate_mask[state]) {
+        reach_step[state] = 0;
+    }
+}
+
 __global__ void reduce_inputs_kernel(const std::uint8_t* valid_state_mask,
                                      const std::uint8_t* candidate_mask,
                                      const std::uint8_t* reachable_prev,
@@ -681,29 +694,38 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
                                   state_count * sizeof(std::uint8_t),
                                   cudaMemcpyHostToDevice));
 
-        std::vector<std::uint8_t> reachable_seed = prepared.candidate_mask;
-        std::vector<InputIndex> controller_seed(state_count, kInvalidInput);
-        std::vector<ReachStep> reach_step_seed(state_count, kUnreachableStep);
+        // 计算候选状态数
         std::uint64_t candidate_count = 0;
         for (std::uint64_t i = 0; i < state_count; ++i) {
             if (prepared.candidate_mask[i]) {
-                reach_step_seed[i] = 0;
                 ++candidate_count;
             }
         }
 
+        // 优化：直接在 GPU 端初始化，避免 H2D 传输
+        // 1. 复制 candidate_mask 到 d_reachable_prev（初始可达状态 = 候选状态）
         GSC_CUDA_CHECK(cudaMemcpy(d_reachable_prev,
-                                  reachable_seed.data(),
+                                  prepared.candidate_mask.data(),
                                   state_count * sizeof(std::uint8_t),
                                   cudaMemcpyHostToDevice));
-        GSC_CUDA_CHECK(cudaMemcpy(d_controller,
-                                  controller_seed.data(),
-                                  state_count * sizeof(InputIndex),
-                                  cudaMemcpyHostToDevice));
-        GSC_CUDA_CHECK(cudaMemcpy(d_reach_step,
-                                  reach_step_seed.data(),
-                                  state_count * sizeof(ReachStep),
-                                  cudaMemcpyHostToDevice));
+        
+        // 2. 使用 cudaMemset 初始化 d_controller 为 kInvalidInput（0xFF）
+        GSC_CUDA_CHECK(cudaMemset(d_controller, 
+                                  static_cast<int>(kInvalidInput), 
+                                  state_count * sizeof(InputIndex)));
+        
+        // 3. 使用 cudaMemset 初始化 d_reach_step 为 kUnreachableStep（0xFF）
+        GSC_CUDA_CHECK(cudaMemset(d_reach_step, 
+                                  static_cast<int>(kUnreachableStep), 
+                                  state_count * sizeof(ReachStep)));
+        
+        // 4. 使用 GPU kernel 初始化候选状态的 reach_step 为 0
+        const auto init_blocks = ceil_div_to_u32(state_count, threads);
+        init_candidate_reach_step_kernel<<<init_blocks, threads>>>(d_candidate_mask,
+                                                                   d_reach_step,
+                                                                   state_count);
+        GSC_CUDA_CHECK(cudaGetLastError());
+        GSC_CUDA_CHECK(cudaDeviceSynchronize());
         
         auto init_memcpy_stop = std::chrono::steady_clock::now();
         report.kernel_timings.abstraction_memcpy_h2d_ms = 
