@@ -22,13 +22,15 @@ void expect(bool condition, const std::string& message) {
 int main() {
     try {
         const auto cfg = gsc::make_default_case();
-        const auto prepared = gsc::prepare_case_cpu<std::uint32_t>(cfg);
-        const auto result = gsc::solve_backward_cpu(prepared, cfg.max_iterations, false);
+        
+        // GPU-only computation
+        const auto gpu = gsc::run_case_cuda_u32(cfg);
+        expect(gpu.executed, "gpu backend run did not execute");
 
         const auto output_path = std::filesystem::temp_directory_path() / "gsc_result_io_test.h5";
         std::filesystem::remove(output_path);
 
-        gsc::write_results_hdf5(output_path.string(), cfg, prepared, {{"cpu", &result}});
+        gsc::write_gpu_results_hdf5(output_path.string(), cfg, gpu);
 
         expect(std::filesystem::exists(output_path), "expected HDF5 output file to exist");
         expect(std::filesystem::file_size(output_path) > 0, "expected HDF5 output file to be non-empty");
@@ -36,8 +38,8 @@ int main() {
 #if GSC_HAS_HDF5
         const hid_t file = H5Fopen(output_path.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
         expect(file >= 0, "expected HDF5 file to open");
-        expect(H5Lexists(file, "/result/cpu/controller", H5P_DEFAULT) > 0, "missing controller dataset");
-        expect(H5Lexists(file, "/summary/cpu/message", H5P_DEFAULT) > 0, "missing summary message dataset");
+        expect(H5Lexists(file, "/result/gpu/controller", H5P_DEFAULT) > 0, "missing controller dataset");
+        expect(H5Lexists(file, "/summary/gpu/message", H5P_DEFAULT) > 0, "missing summary message dataset");
         H5Fclose(file);
 #endif
 

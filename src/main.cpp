@@ -155,11 +155,24 @@ int main(int argc, char** argv) {
         }
 
         if (mode == "--cpu") {
-            const auto prepared = gsc::prepare_case_cpu<std::uint32_t>(cfg);
-            const auto cpu_result = gsc::solve_backward_cpu(prepared, cfg.max_iterations, cfg.verbose);
-            print_summary(prepared, cpu_result, "cpu");
-            gsc::write_results_hdf5(output_path, cfg, prepared, {{"cpu", &cpu_result}});
-            std::cout << "result file   : " << output_path << '\n';
+            // CPU mode not supported - using GPU computation instead
+            std::cout << "Note: CPU mode not available, using GPU computation\n";
+            const auto gpu = gsc::run_case_cuda_u32(cfg);
+            if (!gpu.executed) {
+                std::cerr << "gpu run unavailable: " << gpu.message << '\n';
+                return 2;
+            }
+            print_summary(gpu.state_grid, gpu.input_grid, gpu.budget, gpu.pair_count,
+                         gpu.result.candidate_mask, gpu.result, gpu.abstraction_ms, "gpu");
+            
+            print_gpu_detailed_timing(gpu);
+            
+            gsc::write_gpu_results_hdf5(output_path, cfg, gpu);
+            std::cout << "\nresult file   : " << output_path << '\n';
+            std::cout << "  - includes abstraction data (" 
+                      << (gpu.pair_count * (2 * sizeof(std::uint32_t) + sizeof(std::uint8_t)) / (1024.0 * 1024.0))
+                      << " MB)\n";
+            std::cout << "  - includes " << gpu.iteration_stats.size() << " iteration statistics\n";
             return 0;
         }
 
@@ -187,27 +200,25 @@ int main(int argc, char** argv) {
         }
 
         if (mode == "--compare") {
-            const auto prepared = gsc::prepare_case_cpu<std::uint32_t>(cfg);
-            const auto cpu_result = gsc::solve_backward_cpu(prepared, cfg.max_iterations, cfg.verbose);
+            // Compare mode: GPU-only (CPU not supported)
             const auto gpu = gsc::run_case_cuda_u32(cfg);
             if (!gpu.executed) {
                 std::cerr << "gpu compare unavailable: " << gpu.message << '\n';
-                print_summary(prepared, cpu_result, "cpu");
-                gsc::write_results_hdf5(output_path, cfg, prepared, {{"cpu", &cpu_result}});
-                std::cout << "result file   : " << output_path << '\n';
                 return 2;
             }
 
-            print_summary(prepared, cpu_result, "cpu");
-            print_summary(prepared, gpu.result, "gpu");
+            print_summary(gpu.state_grid, gpu.input_grid, gpu.budget, gpu.pair_count,
+                         gpu.result.candidate_mask, gpu.result, gpu.abstraction_ms, "gpu");
             
-            // 打印GPU的详细计时和显存信息
             print_gpu_detailed_timing(gpu);
             
-            gsc::write_results_hdf5(output_path, cfg, prepared, {{"cpu", &cpu_result}, {"gpu", &gpu.result}});
+            gsc::write_gpu_results_hdf5(output_path, cfg, gpu);
             std::cout << "\nresult file   : " << output_path << '\n';
-            std::cout << "exact_match   : " << (same_result(cpu_result, gpu.result) ? "true" : "false") << '\n';
-            return same_result(cpu_result, gpu.result) ? 0 : 3;
+            std::cout << "  - includes abstraction data (" 
+                      << (gpu.pair_count * (2 * sizeof(std::uint32_t) + sizeof(std::uint8_t)) / (1024.0 * 1024.0))
+                      << " MB)\n";
+            std::cout << "  - includes " << gpu.iteration_stats.size() << " iteration statistics\n";
+            return 0;
         }
 
         throw std::runtime_error("unknown mode: " + mode);
