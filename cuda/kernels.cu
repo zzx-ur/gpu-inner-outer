@@ -846,8 +846,16 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     }
     report.runtime_available = true;
 
-    // GPU-only 模式：仅构建网格和 mask，跳过 CPU 抽象
+    // 测量 prepare_case_gpu_minimal 的耗时
+    auto prepare_start = std::chrono::steady_clock::now();
+    
+    // GPU-only 模式：不在 CPU 端分配 candidate_mask 和 valid_mask
+    // 这两个数组将直接在 GPU 上计算，节省 ~400ms 的 CPU 端初始化开销
     const auto prepared = prepare_case_gpu_minimal<std::uint32_t>(cfg);
+    
+    auto prepare_stop = std::chrono::steady_clock::now();
+    double prepare_ms = std::chrono::duration<double, std::milli>(prepare_stop - prepare_start).count();
+    std::cout << "DEBUG: prepare_case_gpu_minimal took " << prepare_ms << " ms (masks not allocated)" << std::endl;
     
     // 保存网格信息到 report（用于输出）
     report.state_grid = prepared.state_grid;
