@@ -16,7 +16,7 @@ struct HyperRect4D {
 
 // 状态约束类型枚举
 enum class ConstraintType {
-    kNone,           // 无约束（仅使用 map/obstacles）
+    kNone,           // 无约束（仅使用 map）
     kHyperbolic,     // 双曲线约束: x1^2 - x2^2 <= a, b*x2^2 - x1^2 <= c
     kElliptic,       // 椭圆约束: (x1/a)^2 + (x2/b)^2 <= 1
     kCustom          // 自定义约束函数
@@ -51,7 +51,6 @@ struct CaseConfig {
 
     HyperRect4D candidate{};
     HyperRect4D map{};
-    std::vector<HyperRect4D> obstacles;
 
     // 状态约束配置
     ConstraintType constraint_type = ConstraintType::kNone;

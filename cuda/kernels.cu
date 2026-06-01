@@ -51,16 +51,10 @@ struct GpuConstraintParams {
     double elliptic_b;
 };
 
-// GPU 端地图和障碍物参数结构
+// GPU 端地图参数结构
 struct GpuMapParams {
     double map_lb[kStateDim];
     double map_ub[kStateDim];
-    // 注意：障碍物数组需要单独传递
-};
-
-struct GpuObstacle {
-    double lb[kStateDim];
-    double ub[kStateDim];
 };
 
 // 设备端约束检查函数
@@ -82,6 +76,14 @@ __device__ bool d_satisfies_constraint(const double x[kStateDim], const GpuConst
         default:
             return true;
     }
+}
+
+// 优化的双曲线约束检查（内联，避免函数调用开销）
+__device__ inline bool d_satisfies_hyperbolic_constraint(const double x[kStateDim], 
+                                                         double a, double b, double c) {
+    const double x1_sq = x[0] * x[0];
+    const double x2_sq = x[1] * x[1];
+    return (x1_sq - x2_sq <= a) && (b * x2_sq - x1_sq <= c);
 }
 
 // 设备端点在矩形内检查
@@ -230,11 +232,10 @@ __global__ void build_constraint_mask_kernel(const Grid4D<std::uint32_t> state_g
     constraint_mask[flat] = d_satisfies_constraint(center, constraint_params) ? 1 : 0;
 }
 
-// GPU kernel：构建 valid_mask（包含 map、obstacles 和约束检查）
+// GPU kernel：构建 valid_mask（仅包含 map 和约束检查，无障碍物）
+// 优化版本：移除障碍物检查逻辑，减少分支和内存访问
 __global__ void build_valid_mask_kernel(const Grid4D<std::uint32_t> state_grid,
                                         const GpuMapParams map_params,
-                                        const GpuObstacle* obstacles,
-                                        std::uint32_t obstacle_count,
                                         const GpuConstraintParams constraint_params,
                                         std::uint8_t* valid_mask) {
     const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -248,19 +249,37 @@ __global__ void build_valid_mask_kernel(const Grid4D<std::uint32_t> state_grid,
     // 检查是否在 map 内
     bool valid = d_point_in_rect(map_params.map_lb, map_params.map_ub, center);
     
-    // 检查是否在障碍物内
-    if (valid) {
-        for (std::uint32_t i = 0; i < obstacle_count; ++i) {
-            if (d_point_in_rect(obstacles[i].lb, obstacles[i].ub, center)) {
-                valid = false;
-                break;
-            }
-        }
-    }
-    
-    // 检查是否满足状态约束
+    // 检查是否满足状态约束（无障碍物检查）
     if (valid) {
         valid = d_satisfies_constraint(center, constraint_params);
+    }
+    
+    valid_mask[flat] = valid ? 1 : 0;
+}
+
+// 优化的双曲线约束专用 kernel（针对 hyperbolic_case 优化）
+__global__ void build_valid_mask_hyperbolic_kernel(const Grid4D<std::uint32_t> state_grid,
+                                                   const GpuMapParams map_params,
+                                                   double hyperbolic_a,
+                                                   double hyperbolic_b,
+                                                   double hyperbolic_c,
+                                                   std::uint8_t* valid_mask) {
+    const std::uint64_t flat = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (flat >= state_grid.total_size) {
+        return;
+    }
+
+    double center[kStateDim];
+    state_grid.center(static_cast<std::uint32_t>(flat), center);
+    
+    // 检查是否在 map 内
+    bool valid = d_point_in_rect(map_params.map_lb, map_params.map_ub, center);
+    
+    // 直接检查双曲线约束（避免函数调用开销）
+    if (valid) {
+        const double x1_sq = center[0] * center[0];
+        const double x2_sq = center[1] * center[1];
+        valid = (x1_sq - x2_sq <= hyperbolic_a) && (hyperbolic_b * x2_sq - x1_sq <= hyperbolic_c);
     }
     
     valid_mask[flat] = valid ? 1 : 0;
@@ -567,7 +586,6 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     std::uint8_t* d_valid_mask = nullptr;
     std::uint8_t* d_candidate_mask = nullptr;
     std::uint8_t* d_constraint_mask = nullptr;
-    GpuObstacle* d_obstacles = nullptr;
     std::uint8_t* d_reachable_prev = nullptr;
     std::uint8_t* d_reachable_next = nullptr;
     InputIndex* d_controller = nullptr;
@@ -635,34 +653,25 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
             map_params.map_ub[dim] = cfg.map.ub[dim];
         }
         
-        // 将障碍物复制到 GPU
-        std::vector<GpuObstacle> h_obstacles;
-        for (const auto& obs : cfg.obstacles) {
-            GpuObstacle gpu_obs;
-            for (int dim = 0; dim < kStateDim; ++dim) {
-                gpu_obs.lb[dim] = obs.lb[dim];
-                gpu_obs.ub[dim] = obs.ub[dim];
-            }
-            h_obstacles.push_back(gpu_obs);
-        }
-        
-        if (!h_obstacles.empty()) {
-            GSC_CUDA_CHECK(cudaMalloc(&d_obstacles, h_obstacles.size() * sizeof(GpuObstacle)));
-            GSC_CUDA_CHECK(cudaMemcpy(d_obstacles,
-                                      h_obstacles.data(),
-                                      h_obstacles.size() * sizeof(GpuObstacle),
-                                      cudaMemcpyHostToDevice));
-        }
-        
-        // 在 GPU 上构建 valid_mask
+        // 在 GPU 上构建 valid_mask（无障碍物检查）
         std::cout << "GPU: Building valid mask on device..." << std::endl;
         const auto state_blocks = ceil_div_to_u32(state_count, threads);
-        build_valid_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
-                                                           map_params,
-                                                           d_obstacles,
-                                                           static_cast<std::uint32_t>(h_obstacles.size()),
-                                                           constraint_params,
-                                                           d_valid_mask);
+        
+        // 使用专用的双曲线约束 kernel 以获得更好的性能
+        if (constraint_params.constraint_type == 1) {  // kHyperbolic
+            std::cout << "GPU: Using optimized hyperbolic constraint kernel..." << std::endl;
+            build_valid_mask_hyperbolic_kernel<<<state_blocks, threads>>>(prepared.state_grid,
+                                                                          map_params,
+                                                                          constraint_params.hyperbolic_a,
+                                                                          constraint_params.hyperbolic_b,
+                                                                          constraint_params.hyperbolic_c,
+                                                                          d_valid_mask);
+        } else {
+            build_valid_mask_kernel<<<state_blocks, threads>>>(prepared.state_grid,
+                                                               map_params,
+                                                               constraint_params,
+                                                               d_valid_mask);
+        }
         GSC_CUDA_CHECK(cudaGetLastError());
         GSC_CUDA_CHECK(cudaDeviceSynchronize());
         
@@ -980,7 +989,6 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
     cudaFree(d_valid_mask);
     cudaFree(d_candidate_mask);
     cudaFree(d_constraint_mask);
-    cudaFree(d_obstacles);
     cudaFree(d_reachable_prev);
     cudaFree(d_reachable_next);
     cudaFree(d_controller);
