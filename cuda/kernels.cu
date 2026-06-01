@@ -918,8 +918,8 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
 
         record_memory_stats(report.memory_stats, "after allocation");
 
-        // 测量 GPU 初始化阶段耗时
-        auto init_start = std::chrono::steady_clock::now();
+        // 测量完整的 abstraction 阶段耗时（包括初始化）
+        auto abstraction_start = std::chrono::steady_clock::now();
         
         // 构建 GPU 约束参数
         GpuConstraintParams constraint_params;
@@ -997,14 +997,13 @@ GpuRunReport run_case_cuda_u32(const CaseConfig& cfg) {
         
         auto init_stop = std::chrono::steady_clock::now();
         report.kernel_timings.abstraction_memcpy_h2d_ms = 
-            std::chrono::duration<double, std::milli>(init_stop - init_start).count();
+            std::chrono::duration<double, std::milli>(init_stop - abstraction_start).count();
 
         // 创建CUDA Events用于kernel级别计时
         cudaEvent_t event_start, event_stop;
         GSC_CUDA_CHECK(cudaEventCreate(&event_start));
         GSC_CUDA_CHECK(cudaEventCreate(&event_stop));
         
-        auto abstraction_start = std::chrono::steady_clock::now();
         const auto pair_blocks = ceil_div_to_u32(pair_count, threads);
         
          std::cout << "GPU: Starting abstraction phase with " << pair_count << " state-input pairs..." << std::endl;
